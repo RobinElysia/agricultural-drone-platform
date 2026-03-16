@@ -1,0 +1,200 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List
+
+import cv2
+import numpy as np
+
+try:
+    from ultralytics import YOLO
+except Exception as e:  # pragma: no cover
+    YOLO = None  # type: ignore
+    IMPORT_ERROR = e
+
+
+BASE_DIR = Path(__file__).resolve().parent
+PERSON_CLASS_ID = 0
+
+
+@dataclass(frozen=True)
+class Detection:
+    class_id: int
+    label: str
+    confidence: float
+    xyxy: tuple[int, int, int, int]
+
+
+MODE_CONFIG = {
+    "person": {
+        "model": BASE_DIR / "yolov8n.pt",
+        "classes": [PERSON_CLASS_ID],
+        "conf": 0.25,
+        "iou": 0.45,
+        "imgsz": 640,
+        "frame_interval": 3,
+        "window": "Detection - person",
+        "box_color": (0, 255, 0),
+        "text_color": (0, 0, 0),
+    },
+    "pest": {
+        "model": BASE_DIR / "models" / "pest.pt",
+        "classes": None,
+        "conf": 0.18,
+        "iou": 0.45,
+        "imgsz": 960,
+        "frame_interval": 1,
+        "window": "Detection - pest",
+        "box_color": (0, 215, 255),
+        "text_color": (20, 20, 20),
+    },
+    "fire": {
+        "model": BASE_DIR / "models" / "fire.pt",
+        "classes": None,
+        "conf": 0.08,
+        "iou": 0.50,
+        "imgsz": 960,
+        "frame_interval": 1,
+        "window": "Detection - fire",
+        "box_color": (0, 0, 255),
+        "text_color": (255, 255, 255),
+    },
+}
+
+
+class VideoDetector:
+    def __init__(
+        self,
+        mode: str,
+        device: str | None = None,
+        conf: float | None = None,
+        iou: float | None = None,
+    ):
+        if YOLO is None:  # pragma: no cover
+            raise RuntimeError(
+                "未安装或无法导入 ultralytics，请先安装依赖。原始错误："
+                f"{IMPORT_ERROR}"
+            )
+        if mode not in MODE_CONFIG:
+            raise ValueError(f"不支持的检测模式: {mode}")
+
+        self.mode = mode
+        self.config = MODE_CONFIG[mode]
+        model_path = Path(self.config["model"])
+        if not model_path.exists():
+            raise FileNotFoundError(f"未找到模型文件: {model_path}")
+
+        self.model = YOLO(str(model_path))
+        self.device = device
+        self.conf = float(conf if conf is not None else self.config["conf"])
+        self.iou = float(iou if iou is not None else self.config["iou"])
+
+    @property
+    def window_name(self) -> str:
+        return str(self.config["window"])
+
+    @property
+    def default_imgsz(self) -> int:
+        return int(self.config["imgsz"])
+
+    @property
+    def default_frame_interval(self) -> int:
+        return int(self.config["frame_interval"])
+
+    @property
+    def box_color(self) -> tuple[int, int, int]:
+        return tuple(self.config["box_color"])
+
+    @property
+    def text_color(self) -> tuple[int, int, int]:
+        return tuple(self.config["text_color"])
+
+    def detect(self, frame_bgr: np.ndarray, imgsz: int | None = None) -> List[Detection]:
+        predict_kwargs = {
+            "source": frame_bgr,
+            "conf": self.conf,
+            "iou": self.iou,
+            "verbose": False,
+        }
+        if self.config["classes"] is not None:
+            predict_kwargs["classes"] = self.config["classes"]
+        if self.device is not None:
+            predict_kwargs["device"] = self.device
+        if imgsz is not None:
+            predict_kwargs["imgsz"] = imgsz
+
+        results = self.model.predict(**predict_kwargs)
+        result = results[0]
+        detections: List[Detection] = []
+        if result.boxes is None or len(result.boxes) == 0:
+            return detections
+
+        names = result.names if isinstance(result.names, dict) else {}
+        xyxy = result.boxes.xyxy.detach().cpu().numpy()
+        confs = result.boxes.conf.detach().cpu().numpy()
+        classes = result.boxes.cls.detach().cpu().numpy().astype(int)
+
+        for idx in range(xyxy.shape[0]):
+            x1, y1, x2, y2 = xyxy[idx].tolist()
+            label = names.get(int(classes[idx]), str(int(classes[idx])))
+            detections.append(
+                Detection(
+                    class_id=int(classes[idx]),
+                    label=label,
+                    confidence=float(confs[idx]),
+                    xyxy=(int(x1), int(y1), int(x2), int(y2)),
+                )
+            )
+        return detections
+
+
+def draw_detections(
+    frame_bgr: np.ndarray,
+    detections: List[Detection],
+    box_color: tuple[int, int, int] = (0, 255, 0),
+    text_color: tuple[int, int, int] = (0, 0, 0),
+) -> np.ndarray:
+    output = frame_bgr.copy()
+    height, width = output.shape[:2]
+    base_thickness = max(2, int(round(min(width, height) / 320)))
+    font_scale = max(0.7, min(width, height) / 900.0)
+
+    for detection in detections:
+        x1, y1, x2, y2 = detection.xyxy
+        label = f"{detection.label} {detection.confidence:.2f}"
+        box_w = max(x2 - x1, 1)
+        box_h = max(y2 - y1, 1)
+        thickness = base_thickness + (1 if min(box_w, box_h) < 80 else 0)
+        cv2.rectangle(output, (x1, y1), (x2, y2), box_color, thickness)
+
+        (text_w, text_h), baseline = cv2.getTextSize(
+            label,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            thickness,
+        )
+        text_x = max(x1, 0)
+        prefer_top = y1 >= text_h + baseline + 12
+        if prefer_top:
+            bg_top = y1 - text_h - baseline - 12
+            bg_bottom = y1
+            text_y = y1 - baseline - 6
+        else:
+            bg_top = y1
+            bg_bottom = min(y1 + text_h + baseline + 12, height - 1)
+            text_y = min(bg_bottom - baseline - 6, height - 1)
+        bg_right = text_x + text_w + 8
+
+        cv2.rectangle(output, (text_x, bg_top), (min(bg_right, width - 1), bg_bottom), box_color, -1)
+        cv2.putText(
+            output,
+            label,
+            (text_x + 4, text_y - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            text_color,
+            thickness,
+            cv2.LINE_AA,
+        )
+    return output
