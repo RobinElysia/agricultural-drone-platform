@@ -55,7 +55,9 @@ export const config = {
 
   // YOLO service settings
   yolo: {
-    baseUrl: process.env.YOLO_BASE_URL || 'http://127.0.0.1:5000',
+    baseUrl:
+      process.env.YOLO_BASE_URL ||
+      (process.env.NODE_ENV?.toLowerCase() === 'production' ? 'http://yolo:5000' : 'http://127.0.0.1:5000'),
     timeout: parseInt(process.env.YOLO_TIMEOUT || '20000', 10)
   }
 }

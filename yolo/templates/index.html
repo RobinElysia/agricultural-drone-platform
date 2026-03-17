@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YOLO Smart System</title>
+  <style>
+    :root {
+      --bg: #f4f7f1;
+      --panel: #ffffff;
+      --line: #d8e2d0;
+      --text: #163020;
+      --muted: #5b6f61;
+      --accent: #2f7d32;
+      --warn: #c62828;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(79, 142, 74, 0.12), transparent 32%),
+        linear-gradient(180deg, #f9fbf7 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 24px; }
+    .hero {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 18px 50px rgba(29, 57, 39, 0.08);
+      backdrop-filter: blur(6px);
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .stat strong { display: block; font-size: 28px; }
+    .muted { color: var(--muted); }
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin: 18px 0;
+      flex-wrap: wrap;
+    }
+    .tab {
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font-weight: 600;
+    }
+    .tab.active {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    form { display: grid; gap: 12px; }
+    input, button {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      padding: 11px 12px;
+      font: inherit;
+    }
+    select {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      padding: 11px 12px;
+      font: inherit;
+      background: #fff;
+    }
+    button {
+      cursor: pointer;
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
+    button.secondary { background: #556b5f; }
+    .alert {
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: #fff0f0;
+      border: 1px solid #f2c9c9;
+      color: var(--warn);
+    }
+    .result img {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      display: block;
+      margin-top: 12px;
+    }
+    ul {
+      margin: 10px 0 0;
+      padding-left: 18px;
+    }
+    code {
+      background: #edf3ea;
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+    .status-text {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .status-text.error {
+      color: var(--warn);
+    }
+    .result video {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      display: block;
+      margin-top: 12px;
+      background: #08120b;
+    }
+    @media (max-width: 860px) {
+      .hero { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <section class="card">
+        <h1>农业无人机场景 YOLO 智能检测</h1>
+        <p class="muted">当前目录已整合图片上传检测、管理员人脸认证，以及原有本地视频检测脚本。</p>
+        <p class="muted">模型路径: <code>{{ model_paths.pest }}</code> / <code>{{ model_paths.fire }}</code></p>
+      </section>
+      <section class="card stats">
+        <div class="stat"><span class="muted">设备数</span><strong>{{ stats.devices }}</strong></div>
+        <div class="stat"><span class="muted">告警数</span><strong>{{ stats.alerts }}</strong></div>
+        <div class="stat"><span class="muted">虫害检测</span><strong>{{ stats.pest_runs }}</strong></div>
+        <div class="stat"><span class="muted">火灾检测</span><strong>{{ stats.fire_runs }}</strong></div>
+      </section>
+    </div>
+
+    {% if error %}
+    <div class="alert">{{ error }}</div>
+    {% endif %}
+
+    <div class="tabs">
+      <div class="tab {% if active_tab == 'pest' %}active{% endif %}">虫害检测</div>
+      <div class="tab {% if active_tab == 'fire' %}active{% endif %}">火灾检测</div>
+      <div class="tab {% if active_tab == 'video' %}active{% endif %}">视频识别</div>
+      <div class="tab {% if active_tab == 'admin' %}active{% endif %}">管理员认证</div>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <h2>虫害识别</h2>
+        <form action="/detect/pest" method="post" enctype="multipart/form-data">
+          <input type="file" name="image" accept=".jpg,.jpeg,.png,.bmp,.webp" required>
+          <input type="number" step="0.01" name="conf" placeholder="conf 默认 0.60">
+          <input type="number" step="1" name="imgsz" placeholder="imgsz 默认 1280">
+          <input type="number" step="0.01" name="iou" placeholder="iou 默认 0.45">
+          <input type="text" name="augment" placeholder="augment: true/false">
+          <button type="submit">执行虫害检测</button>
+        </form>
+        {% if pest %}
+        <div class="result">
+          <p>检测数量: <strong>{{ pest.count }}</strong></p>
+          <img src="/static/{{ pest.result }}" alt="虫害检测结果">
+          <ul>
+            {% for item in pest.detections[:10] %}
+            <li>{{ item.label }} / {{ '%.3f'|format(item.confidence) }} / {{ item.xyxy }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h2>火灾识别</h2>
+        <form action="/detect/fire" method="post" enctype="multipart/form-data">
+          <input type="file" name="image" accept=".jpg,.jpeg,.png,.bmp,.webp" required>
+          <input type="number" step="0.01" name="conf" placeholder="conf 默认 0.40">
+          <input type="number" step="1" name="imgsz" placeholder="imgsz 默认 1280">
+          <input type="number" step="0.01" name="iou" placeholder="iou 默认 0.45">
+          <input type="text" name="augment" placeholder="augment: true/false">
+          <button type="submit">执行火灾检测</button>
+        </form>
+        {% if fire %}
+        <div class="result">
+          <p>检测数量: <strong>{{ fire.count }}</strong></p>
+          <img src="/static/{{ fire.result }}" alt="火灾检测结果">
+          <ul>
+            {% for item in fire.detections[:10] %}
+            <li>{{ item.label }} / {{ '%.3f'|format(item.confidence) }} / {{ item.xyxy }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h2>管理员人脸认证</h2>
+        <form action="/admin/train" method="post">
+          <button type="submit" class="secondary">训练管理员人脸库</button>
+        </form>
+        <form action="/admin/login" method="post" enctype="multipart/form-data">
+          <input type="file" name="face" accept=".jpg,.jpeg,.png,.bmp,.webp" required>
+          <input type="number" step="0.1" name="threshold" placeholder="threshold 默认 70">
+          <button type="submit">执行人脸登录</button>
+        </form>
+        {% if auth %}
+        <div class="result">
+          <p>认证结果: <strong>{{ '成功' if auth.ok else '失败' }}</strong></p>
+          <p>{{ auth.reason }}</p>
+          {% if auth.confidence is not none %}
+          <p>置信值: {{ auth.confidence }}</p>
+          {% endif %}
+          {% if auth.upload %}
+          <img src="/static/{{ auth.upload }}" alt="管理员上传图片">
+          {% endif %}
+        </div>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h2>视频识别</h2>
+        <form id="video-detect-form">
+          <select id="video-task" name="task" required>
+            <option value="pest">虫害视频检测</option>
+            <option value="fire">火灾视频检测</option>
+          </select>
+          <input id="video-file" type="file" name="video" accept=".mp4,.avi,.mov,.mkv,.webm" required>
+          <input id="video-conf" type="number" step="0.01" name="conf" placeholder="conf 默认按任务配置">
+          <input id="video-imgsz" type="number" step="1" name="imgsz" placeholder="imgsz 默认按任务配置">
+          <input id="video-iou" type="number" step="0.01" name="iou" placeholder="iou 默认按任务配置">
+          <input id="video-augment" type="text" name="augment" placeholder="augment: true/false">
+          <button id="video-submit" type="submit">开始视频检测</button>
+        </form>
+        <p id="video-status" class="status-text">请选择本地视频并点击开始检测。</p>
+        <div class="result">
+          <video id="video-preview" controls preload="metadata"></video>
+          <p id="video-result-message"></p>
+          <p id="video-result-url"></p>
+        </div>
+      </section>
+    </div>
+  </div>
+  <script>
+    const videoForm = document.getElementById('video-detect-form');
+    const videoFileInput = document.getElementById('video-file');
+    const videoTaskInput = document.getElementById('video-task');
+    const videoConfInput = document.getElementById('video-conf');
+    const videoImgszInput = document.getElementById('video-imgsz');
+    const videoIouInput = document.getElementById('video-iou');
+    const videoAugmentInput = document.getElementById('video-augment');
+    const videoSubmitButton = document.getElementById('video-submit');
+    const videoStatus = document.getElementById('video-status');
+    const videoPreview = document.getElementById('video-preview');
+    const videoResultMessage = document.getElementById('video-result-message');
+    const videoResultUrl = document.getElementById('video-result-url');
+
+    const setVideoStatus = (message, isError = false) => {
+      videoStatus.textContent = message;
+      videoStatus.className = isError ? 'status-text error' : 'status-text';
+    };
+
+    const clearVideoResult = () => {
+      videoPreview.removeAttribute('src');
+      videoPreview.load();
+      videoResultMessage.textContent = '';
+      videoResultUrl.innerHTML = '';
+    };
+
+    videoFileInput.addEventListener('change', () => {
+      clearVideoResult();
+      const file = videoFileInput.files && videoFileInput.files[0];
+      if (!file) {
+        setVideoStatus('请选择本地视频并点击开始检测。');
+        return;
+      }
+
+      setVideoStatus(`已选择视频: ${file.name}`);
+      const localUrl = URL.createObjectURL(file);
+      videoPreview.src = localUrl;
+      videoPreview.dataset.localUrl = localUrl;
+    });
+
+    videoForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      const file = videoFileInput.files && videoFileInput.files[0];
+      if (!file) {
+        setVideoStatus('未选择视频文件。', true);
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('task', videoTaskInput.value);
+      formData.append('video', file);
+      if (videoConfInput.value) formData.append('conf', videoConfInput.value);
+      if (videoImgszInput.value) formData.append('imgsz', videoImgszInput.value);
+      if (videoIouInput.value) formData.append('iou', videoIouInput.value);
+      if (videoAugmentInput.value) formData.append('augment', videoAugmentInput.value);
+
+      videoSubmitButton.disabled = true;
+      videoSubmitButton.textContent = '检测中...';
+      setVideoStatus('正在上传视频并执行 YOLO 检测，请稍候...');
+      videoResultMessage.textContent = '';
+      videoResultUrl.innerHTML = '';
+
+      try {
+        const response = await fetch('/detect_video', {
+          method: 'POST',
+          body: formData
+        });
+
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (parseError) {
+          throw new Error('后端返回的不是有效 JSON，无法解析检测结果。');
+        }
+
+        if (!response.ok || !payload.success) {
+          throw new Error(payload && payload.message ? payload.message : `请求失败，状态码 ${response.status}`);
+        }
+
+        if (!payload.result_url) {
+          throw new Error('后端未返回 result_url，无法预览检测结果。');
+        }
+
+        if (videoPreview.dataset.localUrl) {
+          URL.revokeObjectURL(videoPreview.dataset.localUrl);
+          delete videoPreview.dataset.localUrl;
+        }
+
+        videoPreview.src = payload.result_url;
+        videoPreview.load();
+        videoResultMessage.textContent = `${payload.message} 总帧数 ${payload.total_frames}，命中帧数 ${payload.frames_with_detections}，总检测数 ${payload.total_detections}。`;
+        videoResultUrl.innerHTML = `结果地址: <a href="${payload.result_url}" target="_blank" rel="noopener noreferrer">${payload.result_url}</a>`;
+        setVideoStatus('视频检测完成。');
+      } catch (error) {
+        clearVideoResult();
+        setVideoStatus(error && error.message ? error.message : '视频检测失败。', true);
+      } finally {
+        videoSubmitButton.disabled = false;
+        videoSubmitButton.textContent = '开始视频检测';
+      }
+    });
+  </script>
+</body>
+</html>

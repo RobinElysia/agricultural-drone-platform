@@ -162,3 +162,14 @@ export interface YoloDetectionResult {
   conf: number
   imgsz?: number | null
 }
+
+export interface YoloVideoDetectionResult {
+  success: boolean
+  message: string
+  task: YoloTask
+  result_url: string
+  upload_url?: string
+  total_frames: number
+  frames_with_detections: number
+  total_detections: number
+}

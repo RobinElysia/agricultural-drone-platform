@@ -16,7 +16,7 @@ import environmentRoutes from './routes/environment'
 import aiRoutes from './routes/ai'
 import dashboardRoutes from './routes/dashboard'
 import targetRoutes from './routes/target'
-import yoloRoutes from './routes/yolo'
+import yoloRoutes, { yoloPublicRoutes } from './routes/yolo'
 
 // Create Express app
 const app = express()
@@ -43,6 +43,7 @@ app.use('/api/environment', authenticate, environmentRoutes)
 app.use('/api/ai', authenticate, aiRoutes)
 app.use('/api/dashboard', authenticate, dashboardRoutes)
 app.use('/api/targets', authenticate, targetRoutes)
+app.use('/api/yolo', yoloPublicRoutes)
 app.use('/api/yolo', authenticate, yoloRoutes)
 
 // Health check

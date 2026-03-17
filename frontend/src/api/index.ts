@@ -11,7 +11,8 @@ import type {
   DroneOperation,
   AIChat,
   YoloTask,
-  YoloDetectionResult
+  YoloDetectionResult,
+  YoloVideoDetectionResult
 } from '@/types'
 
 // Create Axios instance
@@ -253,6 +254,26 @@ export const yoloAPI = {
       filename: options?.filename,
       conf: options?.conf,
       imgsz: options?.imgsz
+    })
+  },
+  detectVideo: (
+    task: YoloTask,
+    video: File,
+    options?: { conf?: number; imgsz?: number; iou?: number; augment?: string }
+  ): Promise<ApiResponse<YoloVideoDetectionResult>> => {
+    const formData = new FormData()
+    formData.append('task', task)
+    formData.append('video', video)
+    if (options?.conf !== undefined) formData.append('conf', String(options.conf))
+    if (options?.imgsz !== undefined) formData.append('imgsz', String(options.imgsz))
+    if (options?.iou !== undefined) formData.append('iou', String(options.iou))
+    if (options?.augment !== undefined) formData.append('augment', options.augment)
+
+    return api.post('/yolo/detect-video', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      },
+      timeout: 600000
     })
   }
 }

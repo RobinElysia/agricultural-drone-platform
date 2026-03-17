@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+from PIL import Image
 
 try:
     from ultralytics import YOLO
@@ -20,10 +21,10 @@ PERSON_CLASS_ID = 0
 
 @dataclass(frozen=True)
 class Detection:
-    class_id: int
     label: str
     confidence: float
-    xyxy: tuple[int, int, int, int]
+    xyxy: Tuple[int, int, int, int]
+    class_id: Optional[int] = None
 
 
 MODE_CONFIG = {
@@ -63,6 +64,14 @@ MODE_CONFIG = {
 }
 
 
+def _require_yolo() -> None:
+    if YOLO is None:  # pragma: no cover
+        raise RuntimeError(
+            "未安装或无法导入 ultralytics，请先安装依赖。原始错误："
+            f"{IMPORT_ERROR}"
+        )
+
+
 class VideoDetector:
     def __init__(
         self,
@@ -71,11 +80,7 @@ class VideoDetector:
         conf: float | None = None,
         iou: float | None = None,
     ):
-        if YOLO is None:  # pragma: no cover
-            raise RuntimeError(
-                "未安装或无法导入 ultralytics，请先安装依赖。原始错误："
-                f"{IMPORT_ERROR}"
-            )
+        _require_yolo()
         if mode not in MODE_CONFIG:
             raise ValueError(f"不支持的检测模式: {mode}")
 
@@ -111,7 +116,7 @@ class VideoDetector:
         return tuple(self.config["text_color"])
 
     def detect(self, frame_bgr: np.ndarray, imgsz: int | None = None) -> List[Detection]:
-        predict_kwargs = {
+        predict_kwargs: Dict[str, Any] = {
             "source": frame_bgr,
             "conf": self.conf,
             "iou": self.iou,
@@ -126,27 +131,92 @@ class VideoDetector:
 
         results = self.model.predict(**predict_kwargs)
         result = results[0]
-        detections: List[Detection] = []
-        if result.boxes is None or len(result.boxes) == 0:
-            return detections
+        return _extract_detections(result)
 
-        names = result.names if isinstance(result.names, dict) else {}
-        xyxy = result.boxes.xyxy.detach().cpu().numpy()
-        confs = result.boxes.conf.detach().cpu().numpy()
-        classes = result.boxes.cls.detach().cpu().numpy().astype(int)
 
-        for idx in range(xyxy.shape[0]):
-            x1, y1, x2, y2 = xyxy[idx].tolist()
-            label = names.get(int(classes[idx]), str(int(classes[idx])))
-            detections.append(
-                Detection(
-                    class_id=int(classes[idx]),
-                    label=label,
-                    confidence=float(confs[idx]),
-                    xyxy=(int(x1), int(y1), int(x2), int(y2)),
-                )
-            )
+class YoloDetector:
+    """Image detection wrapper used by the Flask upload service."""
+
+    def __init__(self, weights_path: str | Path, device: Optional[str] = None, conf: float = 0.25):
+        _require_yolo()
+
+        weights = Path(weights_path)
+        if not weights.exists():
+            raise FileNotFoundError(f"未找到模型文件: {weights}")
+
+        self.weights_path = str(weights)
+        self.model = YOLO(self.weights_path)
+        self.device = device
+        self.conf = float(conf)
+
+    def predict(
+        self,
+        image: Image.Image,
+        *,
+        conf: Optional[float] = None,
+        imgsz: Optional[int] = None,
+        iou: Optional[float] = None,
+        augment: bool = False,
+        max_det: int = 100,
+        topk_labels: int = 12,
+    ) -> Tuple[List[Detection], Image.Image]:
+        predict_kwargs: Dict[str, Any] = {
+            "source": image,
+            "device": self.device,
+            "conf": self.conf if conf is None else float(conf),
+            "max_det": max_det,
+            "verbose": False,
+        }
+        if imgsz is not None:
+            predict_kwargs["imgsz"] = int(imgsz)
+        if iou is not None:
+            predict_kwargs["iou"] = float(iou)
+        if augment:
+            predict_kwargs["augment"] = True
+
+        results = self.model.predict(**predict_kwargs)
+        result = results[0]
+        detections = _extract_detections(result)
+
+        result_for_plot = result
+        if result.boxes is not None and len(result.boxes) > 0 and topk_labels > 0:
+            try:
+                confs = result.boxes.conf.detach().cpu().numpy()
+                if confs.shape[0] > topk_labels:
+                    keep = np.argsort(confs)[::-1][:topk_labels]
+                    result_for_plot = result
+                    result_for_plot.boxes = result.boxes[keep]  # type: ignore[attr-defined]
+            except Exception:
+                result_for_plot = result
+
+        plotted = result_for_plot.plot(line_width=3, labels=True, conf=True, font_size=10)
+        plotted_rgb = plotted[..., ::-1]
+        output_image = Image.fromarray(plotted_rgb.astype(np.uint8))
+        return detections, output_image
+
+
+def _extract_detections(result: Any) -> List[Detection]:
+    detections: List[Detection] = []
+    if result.boxes is None or len(result.boxes) == 0:
         return detections
+
+    names = result.names if isinstance(result.names, dict) else {}
+    xyxy = result.boxes.xyxy.detach().cpu().numpy()
+    confs = result.boxes.conf.detach().cpu().numpy()
+    classes = result.boxes.cls.detach().cpu().numpy().astype(int)
+
+    for idx in range(xyxy.shape[0]):
+        x1, y1, x2, y2 = xyxy[idx].tolist()
+        class_id = int(classes[idx])
+        detections.append(
+            Detection(
+                class_id=class_id,
+                label=names.get(class_id, str(class_id)),
+                confidence=float(confs[idx]),
+                xyxy=(int(x1), int(y1), int(x2), int(y2)),
+            )
+        )
+    return detections
 
 
 def draw_detections(

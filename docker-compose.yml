@@ -18,6 +18,16 @@ services:
       timeout: 10s
       retries: 3
 
+  # YOLO 推理服务
+  yolo:
+    build: ./yolo
+    container_name: agricultural-drone-yolo
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+    restart: unless-stopped
+
   # 后端服务
   backend:
     build: ./backend
@@ -30,9 +40,13 @@ services:
       - REDIS_PORT=6379
       - JWT_SECRET=your-secret-key-change-in-production
       - QIANWEN_API_KEY=${QIANWEN_API_KEY}
+      - YOLO_BASE_URL=http://yolo:5000
+      - YOLO_TIMEOUT=600000
     depends_on:
       redis:
         condition: service_healthy
+      yolo:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
