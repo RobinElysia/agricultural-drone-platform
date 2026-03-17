@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,6 +18,21 @@ except Exception as e:  # pragma: no cover
 
 BASE_DIR = Path(__file__).resolve().parent
 PERSON_CLASS_ID = 0
+
+
+def _ensure_numpy_compat_for_yolo() -> None:
+    """Torch/Ultralytics wheels in this project currently require NumPy 1.x."""
+    if os.environ.get("YOLO_ALLOW_NUMPY2", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    major = int(str(np.__version__).split(".", 1)[0])
+    if major >= 2:
+        raise RuntimeError(
+            "当前检测到 NumPy 2.x，与现有 torch/ultralytics 运行环境不兼容。"
+            "请执行: pip install \"numpy<2\" --upgrade --force-reinstall"
+        )
+
+
+_ensure_numpy_compat_for_yolo()
 
 
 @dataclass(frozen=True)

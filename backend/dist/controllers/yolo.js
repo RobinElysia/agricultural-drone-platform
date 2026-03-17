@@ -1,4 +1,5 @@
 import axios from 'axios';
+import FormData from 'form-data';
 import { config } from '../config';
 import { ResponseUtil } from '../utils/response';
 const SUPPORTED_TASKS = ['pest', 'fire'];
@@ -58,22 +59,23 @@ export class YoloController {
         }
     }
     static async detectVideo(req, res) {
+        const body = req.body;
+        const requestWithFile = req;
+        const task = normalizeTask(typeof body.task === 'string' ? body.task : undefined);
+        if (!task) {
+            return res.status(400).json(ResponseUtil.badRequest('Invalid YOLO task type. Only pest and fire are supported.'));
+        }
+        if (!requestWithFile.file || !requestWithFile.file.buffer?.length) {
+            return res.status(400).json(ResponseUtil.badRequest('Missing video file payload.'));
+        }
         try {
-            const body = req.body;
-            const requestWithFile = req;
-            const task = normalizeTask(typeof body.task === 'string' ? body.task : undefined);
-            if (!task) {
-                return res.status(400).json(ResponseUtil.badRequest('Invalid YOLO task type. Only pest and fire are supported.'));
-            }
-            if (!requestWithFile.file || !requestWithFile.file.buffer?.length) {
-                return res.status(400).json(ResponseUtil.badRequest('Missing video file payload.'));
-            }
             const formData = new FormData();
-            const videoBlob = new Blob([requestWithFile.file.buffer], {
-                type: requestWithFile.file.mimetype || 'application/octet-stream'
-            });
+            const filename = requestWithFile.file.originalname || 'upload.mp4';
             formData.append('task', task);
-            formData.append('video', videoBlob, requestWithFile.file.originalname || 'upload.mp4');
+            formData.append('video', requestWithFile.file.buffer, {
+                filename,
+                contentType: requestWithFile.file.mimetype || 'application/octet-stream'
+            });
             if (body.conf !== undefined && body.conf !== '')
                 formData.append('conf', String(body.conf));
             if (body.imgsz !== undefined && body.imgsz !== '')
@@ -84,7 +86,10 @@ export class YoloController {
                 formData.append('augment', String(body.augment));
             const detectUrl = new URL('/detect_video', config.yolo.baseUrl).toString();
             const response = await axios.post(detectUrl, formData, {
-                timeout: Math.max(config.yolo.timeout, 600000)
+                headers: formData.getHeaders(),
+                timeout: Math.max(config.yolo.timeout, 600000),
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity
             });
             const data = response.data || {};
             if (typeof data.result_url === 'string') {
@@ -96,7 +101,7 @@ export class YoloController {
             return res.json(ResponseUtil.success(data, typeof data.message === 'string' ? data.message : 'YOLO video detection completed successfully.'));
         }
         catch (error) {
-            let upstreamMessage = 'YOLO video service request failed.';
+            let upstreamMessage = 'YOLO 视频服务请求失败。';
             if (axios.isAxiosError(error)) {
                 if (typeof error.response?.data?.message === 'string') {
                     upstreamMessage = error.response.data.message;
@@ -107,9 +112,24 @@ export class YoloController {
                 else if (error.message) {
                     upstreamMessage = error.message;
                 }
+                if (error.code === 'ECONNREFUSED') {
+                    upstreamMessage = `无法连接 YOLO 服务 ${config.yolo.baseUrl}，请确认服务已启动。`;
+                }
             }
-            console.error('YOLO video detection error:', error);
-            return res.status(500).json(ResponseUtil.internalError(upstreamMessage));
+            else if (error instanceof Error) {
+                upstreamMessage = error.message;
+            }
+            const errorPayload = {
+                success: false,
+                message: upstreamMessage,
+                task: task ?? 'unknown',
+                filename: requestWithFile.file?.originalname ?? 'unknown'
+            };
+            console.error('YOLO video detection error:', {
+                ...errorPayload,
+                responseData: axios.isAxiosError(error) ? error.response?.data : undefined
+            }, error);
+            return res.status(500).json(errorPayload);
         }
     }
     static async streamMedia(req, res) {
@@ -120,15 +140,29 @@ export class YoloController {
                 return res.status(400).json(ResponseUtil.badRequest('Invalid YOLO media path.'));
             }
             const mediaUrl = new URL(mediaPath, config.yolo.baseUrl).toString();
+            const upstreamHeaders = {};
+            if (typeof req.headers.range === 'string' && req.headers.range.trim()) {
+                upstreamHeaders.range = req.headers.range;
+            }
             const response = await axios.get(mediaUrl, {
                 responseType: 'stream',
+                headers: upstreamHeaders,
                 timeout: Math.max(config.yolo.timeout, 600000),
                 validateStatus: (status) => status < 500
             });
             if (response.status >= 400) {
                 return res.status(response.status).json(ResponseUtil.notFound('YOLO media not found'));
             }
-            const passthroughHeaders = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control'];
+            res.status(response.status);
+            const passthroughHeaders = [
+                'content-type',
+                'content-length',
+                'accept-ranges',
+                'content-range',
+                'cache-control',
+                'etag',
+                'last-modified'
+            ];
             passthroughHeaders.forEach((headerName) => {
                 const headerValue = response.headers[headerName];
                 if (headerValue) {

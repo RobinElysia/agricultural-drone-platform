@@ -186,8 +186,14 @@ export class YoloController {
       }
 
       const mediaUrl = new URL(mediaPath, config.yolo.baseUrl).toString()
+      const upstreamHeaders: Record<string, string> = {}
+      if (typeof req.headers.range === 'string' && req.headers.range.trim()) {
+        upstreamHeaders.range = req.headers.range
+      }
+
       const response = await axios.get(mediaUrl, {
         responseType: 'stream',
+        headers: upstreamHeaders,
         timeout: Math.max(config.yolo.timeout, 600000),
         validateStatus: (status) => status < 500
       })
@@ -196,7 +202,17 @@ export class YoloController {
         return res.status(response.status).json(ResponseUtil.notFound('YOLO media not found'))
       }
 
-      const passthroughHeaders = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control']
+      res.status(response.status)
+
+      const passthroughHeaders = [
+        'content-type',
+        'content-length',
+        'accept-ranges',
+        'content-range',
+        'cache-control',
+        'etag',
+        'last-modified'
+      ]
       passthroughHeaders.forEach((headerName) => {
         const headerValue = response.headers[headerName]
         if (headerValue) {

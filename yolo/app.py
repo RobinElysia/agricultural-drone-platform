@@ -174,11 +174,21 @@ def _process_video_detection(
 
     output_name = f"{task}_video_{uuid.uuid4().hex}.mp4"
     output_path = RESULT_DIR / output_name
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(output_path), fourcc, fps if fps and fps > 0 else 25.0, (width, height))
-    if not writer.isOpened():
+    output_fps = fps if fps and fps > 0 else 25.0
+    writer = None
+    for codec in ("avc1", "H264", "mp4v"):
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*codec)
+            candidate = cv2.VideoWriter(str(output_path), fourcc, output_fps, (width, height))
+            if candidate.isOpened():
+                writer = candidate
+                break
+            candidate.release()
+        except Exception:
+            continue
+    if writer is None:
         capture.release()
-        raise RuntimeError("无法创建检测后视频文件。")
+        raise RuntimeError("无法创建检测后视频文件，当前环境缺少可用视频编码器。")
 
     total_frames = 0
     frames_with_detections = 0
