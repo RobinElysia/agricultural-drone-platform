@@ -98,6 +98,7 @@
                 </el-button>
                 <el-button size="small" type="primary" plain @click="startSprayDrawing" :disabled="!mapInitialized || sprayDrawing">圈选喷洒区</el-button>
                 <el-button size="small" type="success" plain @click="regenerateSprayPath" :disabled="sprayPolygonPoints.length < 3">喷洒轨迹</el-button>
+                <el-button size="small" type="primary" plain @click="openTargetModalFromPlan" :disabled="!sprayPlanResult">新增作业目标</el-button>
                 <el-button size="small" type="success" @click="executeDispatchMission" :disabled="!canExecuteMission">执行派发任务</el-button>
                 <el-button size="small" @click="pauseMission" :disabled="!missionRunning">暂停任务</el-button>
                 <el-button size="small" @click="resumeMission" :disabled="!missionPaused">继续任务</el-button>
@@ -206,8 +207,14 @@
     <el-dialog v-model="showTargetModal" title="新增作业目标" width="520px">
       <el-form :model="newTarget" label-width="92px">
         <el-form-item label="目标名称"><el-input v-model="newTarget.name" /></el-form-item>
-        <el-form-item label="面积(亩)"><el-input-number v-model="newTarget.area" :min="0" /></el-form-item>
-        <el-form-item label="农药量(L)"><el-input-number v-model="newTarget.pesticide" :min="0" /></el-form-item>
+        <el-form-item label="面积(亩)"><el-input-number v-model="newTarget.area" :min="0" :precision="2" /></el-form-item>
+        <el-form-item label="每亩药量(L)">
+          <el-input-number v-model="pesticidePerMu" :min="0.01" :step="0.01" :precision="2" />
+          <div class="form-helper">常规水稻杀虫剂建议约 0.08-0.12 L/亩，可按实际药剂标签调整</div>
+        </el-form-item>
+        <el-form-item label="农药量(L)">
+          <el-input-number :model-value="calculatedPesticide" :precision="2" :min="0" :controls="false" disabled />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showTargetModal = false">取消</el-button>
@@ -300,7 +307,12 @@ const chargingStations = ref<ChargingStation[]>([])
 const showTargetModal = ref(false)
 const showDroneModal = ref(false)
 const editingDrone = ref<any>(null)
-const newTarget = ref({ name: '', area: 0, pesticide: 0, status: 'pending' })
+const newTarget = ref<{ name: string; area: number; status: 'pending' | 'in-progress' | 'completed' }>({
+  name: '',
+  area: 0,
+  status: 'pending'
+})
+const pesticidePerMu = ref(0.1)
 const droneForm = ref({
   name: '',
   status: 'online' as 'online' | 'offline' | 'charging' | 'flying',
@@ -319,9 +331,17 @@ const dispatchTarget = ref<[number, number] | null>(null)
 const missionRunning = ref(false)
 const missionPaused = ref(false)
 const missionSpraying = ref(false)
+const activeMissionTargetId = ref<string | null>(null)
+const MU_TO_M2 = 666.6667
 
 sprayParams.value.speed = speedValue.value
 sprayParams.value.altitude = heightValue.value
+
+const plannedAreaMu = computed(() => Number((sprayStats.value.areaM2 / MU_TO_M2).toFixed(2)))
+
+const calculatedPesticide = computed(() =>
+  Number((Math.max(0, newTarget.value.area) * Math.max(0.01, pesticidePerMu.value)).toFixed(2))
+)
 
 const selectedDrone = computed(() => {
   if (!selectedDroneId.value) return null
@@ -451,6 +471,18 @@ const finishMission = async () => {
   if (selectedDrone.value) {
     selectedDrone.value.status = 'online'
   }
+  if (activeMissionTargetId.value) {
+    try {
+      const completeResponse = await targetAPI.completeTarget(activeMissionTargetId.value)
+      if (completeResponse.code) {
+        await fetchTargets()
+      }
+    } catch (error) {
+      ElMessage.warning('任务已飞行完成，但作业目标状态更新失败，请手动刷新后重试')
+    } finally {
+      activeMissionTargetId.value = null
+    }
+  }
   ElMessage.success('派发喷洒任务已完成，无人机已降落')
 }
 
@@ -519,7 +551,12 @@ const initMapOnDashboard = async () => {
       ? [selectedDrone.value.position.lng, selectedDrone.value.position.lat]
       : [116.397428, 39.90923]
     
-    map = new AMap.Map(mapRef.value, { zoom: 14, center, viewMode: '2D' })
+    map = new AMap.Map(mapRef.value, {
+      zoom: 14,
+      center,
+      viewMode: '2D',
+      layers: [new AMap.TileLayer.Satellite()]
+    })
     map.addControl(new AMap.Scale())
     map.addControl(new AMap.ToolBar({ position: 'LB' }))
     AMapUI = (window as any).AMapUI
@@ -597,8 +634,31 @@ const startSprayDrawing = () => {
 const regenerateSprayPath = () => {
   regenerateSprayPathInternal()
   if (sprayPlanResult.value?.path?.length) {
-    ElMessage.success('喷洒轨迹已生成，可执行派发任务')
+    ElMessage.success('喷洒轨迹已生成，可执行派发任务（执行时自动创建作业目标）')
   }
+}
+
+const openTargetModalFromPlan = () => {
+  if (!sprayPlanResult.value) {
+    ElMessage.warning('请先完成喷洒轨迹规划')
+    return
+  }
+
+  const areaMu = plannedAreaMu.value
+  const pesticide = Number((areaMu * pesticidePerMu.value).toFixed(2))
+  const now = new Date()
+  const missionName = `喷洒作业-${now.getMonth() + 1}${now.getDate()}-${now.getHours()}${now.getMinutes()}`
+
+  newTarget.value = {
+    name: newTarget.value.name || missionName,
+    area: areaMu > 0 ? areaMu : newTarget.value.area,
+    status: 'pending'
+  }
+
+  if (pesticide > 0) {
+    ElMessage.info(`已按面积自动估算用药量：${pesticide} L`)
+  }
+  showTargetModal.value = true
 }
 
 const executeDispatchMission = async () => {
@@ -615,9 +675,37 @@ const executeDispatchMission = async () => {
     return
   }
 
+  if (plannedAreaMu.value <= 0 || calculatedPesticide.value <= 0) {
+    ElMessage.warning('喷洒面积或用药量无效，请重新规划喷洒区')
+    return
+  }
+
+  const now = new Date()
+  const autoTargetName = `自动喷洒任务-${now.getMonth() + 1}${now.getDate()}-${now.getHours()}${now.getMinutes()}`
+  try {
+    const targetResponse = await targetAPI.createTarget({
+      name: autoTargetName,
+      area: plannedAreaMu.value,
+      pesticide: calculatedPesticide.value,
+      status: 'in-progress',
+      location: { lat: 39.90923, lng: 116.397428 }
+    })
+
+    if (!targetResponse.code || !targetResponse.data?.id) {
+      ElMessage.error('自动创建作业目标失败，任务未开始')
+      return
+    }
+    activeMissionTargetId.value = targetResponse.data.id
+    await fetchTargets()
+  } catch (error) {
+    ElMessage.error('自动创建作业目标失败，任务未开始')
+    return
+  }
+
   const missionPath = buildMissionPath()
   if (missionPath.length < 2) {
     ElMessage.warning('任务路径不足，无法执行')
+    activeMissionTargetId.value = null
     return
   }
 
@@ -638,6 +726,7 @@ const executeDispatchMission = async () => {
   createNavigator(speedValue.value * 3.6)
   if (!pathNavigator.value) {
     missionRunning.value = false
+    activeMissionTargetId.value = null
     ElMessage.error('任务导航器创建失败')
     return
   }
@@ -668,6 +757,7 @@ const stopMission = async () => {
   stopNavigation()
   stopMissionIntervals()
   clearSprayCircles()
+  activeMissionTargetId.value = null
   droneMarker.value?.show?.()
   await droneLand()
   if (selectedDrone.value) {
@@ -760,7 +850,7 @@ const refreshTargets = async () => {
 }
 
 const addTarget = async () => {
-  if (!newTarget.value.name || newTarget.value.area <= 0 || newTarget.value.pesticide <= 0) {
+  if (!newTarget.value.name || newTarget.value.area <= 0 || calculatedPesticide.value <= 0) {
     ElMessage.warning('请填写完整信息')
     return
   }
@@ -769,14 +859,14 @@ const addTarget = async () => {
     const response = await targetAPI.createTarget({
       name: newTarget.value.name,
       area: newTarget.value.area,
-      pesticide: newTarget.value.pesticide,
+      pesticide: calculatedPesticide.value,
       status: newTarget.value.status,
       location: { lat: 39.90923, lng: 116.397428 }
     })
     
     if (response.code) {
       showTargetModal.value = false
-      newTarget.value = { name: '', area: 0, pesticide: 0, status: 'pending' }
+      newTarget.value = { name: '', area: 0, status: 'pending' }
       await fetchTargets()
       ElMessage.success('作业目标添加成功')
     }
@@ -1162,6 +1252,13 @@ const getFlightStatusType = (status: string): string => {
 :deep(.el-dialog__footer) {
   border-top: 1px solid #edf2ea;
   padding: 10px 16px 14px;
+}
+
+.form-helper {
+  margin-top: 6px;
+  color: var(--text-500);
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 @media (max-width: 1280px) {
