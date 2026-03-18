@@ -9,6 +9,24 @@ import cv2
 import numpy as np
 from PIL import Image
 
+IMPORT_ERROR: Exception | None = None
+
+
+def _ensure_lzma_support() -> None:
+    """Ensure stdlib lzma module is available before importing ultralytics."""
+    try:
+        import lzma  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError(
+            "Python is missing lzma/_lzma support, so ultralytics cannot be imported. "
+            "Ubuntu fix: install xz-utils and liblzma-dev, rebuild/reinstall Python, "
+            "then reinstall project requirements. "
+            f"Original error: {exc}"
+        ) from exc
+
+
+_ensure_lzma_support()
+
 try:
     from ultralytics import YOLO
 except Exception as e:  # pragma: no cover
@@ -27,8 +45,8 @@ def _ensure_numpy_compat_for_yolo() -> None:
     major = int(str(np.__version__).split(".", 1)[0])
     if major >= 2:
         raise RuntimeError(
-            "当前检测到 NumPy 2.x，与现有 torch/ultralytics 运行环境不兼容。"
-            "请执行: pip install \"numpy<2\" --upgrade --force-reinstall"
+            "NumPy 2.x detected, but the current torch/ultralytics runtime requires NumPy 1.x. "
+            "Run: pip install \"numpy<2\" --upgrade --force-reinstall"
         )
 
 
@@ -82,10 +100,13 @@ MODE_CONFIG = {
 
 def _require_yolo() -> None:
     if YOLO is None:  # pragma: no cover
-        raise RuntimeError(
-            "未安装或无法导入 ultralytics，请先安装依赖。原始错误："
-            f"{IMPORT_ERROR}"
-        )
+        base_message = "ultralytics is not installed or could not be imported."
+        if IMPORT_ERROR is not None and "_lzma" in str(IMPORT_ERROR):
+            base_message = (
+                "ultralytics import failed because Python is missing _lzma support. "
+                "On Ubuntu, install xz-utils and liblzma-dev, rebuild Python, then reinstall requirements."
+            )
+        raise RuntimeError(f"{base_message} Original error: {IMPORT_ERROR}")
 
 
 class VideoDetector:
@@ -98,13 +119,13 @@ class VideoDetector:
     ):
         _require_yolo()
         if mode not in MODE_CONFIG:
-            raise ValueError(f"不支持的检测模式: {mode}")
+            raise ValueError(f"Unsupported detection mode: {mode}")
 
         self.mode = mode
         self.config = MODE_CONFIG[mode]
         model_path = Path(self.config["model"])
         if not model_path.exists():
-            raise FileNotFoundError(f"未找到模型文件: {model_path}")
+            raise FileNotFoundError(f"Model file not found: {model_path}")
 
         self.model = YOLO(str(model_path))
         self.device = device
@@ -158,7 +179,7 @@ class YoloDetector:
 
         weights = Path(weights_path)
         if not weights.exists():
-            raise FileNotFoundError(f"未找到模型文件: {weights}")
+            raise FileNotFoundError(f"Model file not found: {weights}")
 
         self.weights_path = str(weights)
         self.model = YOLO(self.weights_path)

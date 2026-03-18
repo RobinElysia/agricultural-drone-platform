@@ -101,7 +101,7 @@ export class YoloController {
             return res.json(ResponseUtil.success(data, typeof data.message === 'string' ? data.message : 'YOLO video detection completed successfully.'));
         }
         catch (error) {
-            let upstreamMessage = 'YOLO 视频服务请求失败。';
+            let upstreamMessage = 'YOLO ��Ƶ��������ʧ�ܡ�';
             if (axios.isAxiosError(error)) {
                 if (typeof error.response?.data?.message === 'string') {
                     upstreamMessage = error.response.data.message;
@@ -113,11 +113,16 @@ export class YoloController {
                     upstreamMessage = error.message;
                 }
                 if (error.code === 'ECONNREFUSED') {
-                    upstreamMessage = `无法连接 YOLO 服务 ${config.yolo.baseUrl}，请确认服务已启动。`;
+                    upstreamMessage = `�޷����� YOLO ���� ${config.yolo.baseUrl}����ȷ�Ϸ�����������`;
                 }
             }
             else if (error instanceof Error) {
                 upstreamMessage = error.message;
+            }
+            if (upstreamMessage.includes('_lzma')) {
+                upstreamMessage =
+                    'YOLO Python ����ȱ�� _lzma ��չ������ ultralytics �޷����롣' +
+                        'Ubuntu �밲װ xz-utils �� liblzma-dev�����ؽ� Python �����°�װ requirements��';
             }
             const errorPayload = {
                 success: false,

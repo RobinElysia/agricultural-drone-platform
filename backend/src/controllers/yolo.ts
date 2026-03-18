@@ -1,4 +1,4 @@
-import { Request, Response } from 'express'
+﻿import { Request, Response } from 'express'
 import axios from 'axios'
 import FormData from 'form-data'
 import { config } from '../config'
@@ -139,7 +139,7 @@ export class YoloController {
         )
       )
     } catch (error) {
-      let upstreamMessage = 'YOLO 视频服务请求失败。'
+      let upstreamMessage = 'YOLO video service request failed.'
       if (axios.isAxiosError(error)) {
         if (typeof error.response?.data?.message === 'string') {
           upstreamMessage = error.response.data.message
@@ -150,10 +150,16 @@ export class YoloController {
         }
 
         if (error.code === 'ECONNREFUSED') {
-          upstreamMessage = `无法连接 YOLO 服务 ${config.yolo.baseUrl}，请确认服务已启动。`
+          upstreamMessage = `Unable to connect to YOLO service ${config.yolo.baseUrl}. Please verify the service is running.`
         }
       } else if (error instanceof Error) {
         upstreamMessage = error.message
+      }
+
+      if (upstreamMessage.includes('_lzma')) {
+        upstreamMessage =
+          'YOLO Python runtime is missing _lzma support, so ultralytics import failed. ' +
+          'On Ubuntu install xz-utils and liblzma-dev, rebuild Python, then reinstall requirements.'
       }
 
       const errorPayload = {
