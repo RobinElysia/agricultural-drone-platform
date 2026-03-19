@@ -143,6 +143,9 @@ export interface DashboardData {
   }>
 }
 
+export type DroneMoveDirection = 'forward' | 'backward' | 'left' | 'right'
+export type DroneRotateDirection = 'ccw' | 'cw'
+
 export type YoloTask = 'pest' | 'fire'
 
 export interface YoloDetectionItem {

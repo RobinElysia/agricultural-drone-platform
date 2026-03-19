@@ -85,6 +85,17 @@
           </div>
           <el-empty v-else description="正在获取环境数据" />
         </el-card>
+
+        <DroneFlightStatusPanel
+          :status="flightInfo.status"
+          :altitude="droneState.altitude"
+          :move-step="MOVE_STEP_METERS"
+          :forward-distance="flightInfo.forwardDistance"
+          :total-distance="flightInfo.totalDistance"
+          :lateral-distance="flightInfo.lateralDistance"
+          :takeoff-count="flightInfo.takeoffCount"
+          :landing-count="flightInfo.landingCount"
+        />
       </aside>
 
       <main class="column column-center">
@@ -99,10 +110,6 @@
                 <el-button size="small" type="primary" plain @click="startSprayDrawing" :disabled="!mapInitialized || sprayDrawing">圈选喷洒区</el-button>
                 <el-button size="small" type="success" plain @click="regenerateSprayPath" :disabled="sprayPolygonPoints.length < 3">喷洒轨迹</el-button>
                 <el-button size="small" type="primary" plain @click="openTargetModalFromPlan" :disabled="!sprayPlanResult">新增作业目标</el-button>
-                <el-button size="small" type="success" @click="executeDispatchMission" :disabled="!canExecuteMission">执行派发任务</el-button>
-                <el-button size="small" @click="pauseMission" :disabled="!missionRunning">暂停任务</el-button>
-                <el-button size="small" @click="resumeMission" :disabled="!missionPaused">继续任务</el-button>
-                <el-button size="small" type="warning" @click="stopMission" :disabled="!missionRunning && !missionPaused">结束任务</el-button>
                 <el-button size="small" type="warning" plain @click="simulateSprayPath" :disabled="!sprayPlanResult || missionRunning">喷洒模拟</el-button>
                 <el-button size="small" plain @click="exportSprayMission" :disabled="!sprayPlanResult">导出喷洒</el-button>
               </div>
@@ -121,7 +128,6 @@
             <div class="flight-stats">
               <span>派发点: {{ dispatchTargetText }}</span>
               <span>任务状态: {{ missionStatusText }}</span>
-              <span>任务里程: {{ missionDistanceKm.toFixed(2) }} km</span>
             </div>
             <div class="slider-group">
               <label>喷洒速度 (m/s)</label>
@@ -222,11 +228,17 @@
       </template>
     </el-dialog>
 
+    <DroneControlFloating
+      @move="moveDroneByDirection"
+      @rotate="rotateDroneByDirection"
+      @takeoff="handleTakeoffCommand"
+      @landing="handleLandingCommand"
+    />
     <AIChatWindow />
   </div>
 </template>
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
 import { useDroneStore } from '@/store/drone'
@@ -234,8 +246,16 @@ import { useEnvironmentStore } from '@/store/environment'
 import { useAIStore } from '@/store/ai'
 import { authAPI, targetAPI } from '@/api'
 import { ElMessage } from 'element-plus'
-import type { WorkTarget, UserInfo, ChargingStation } from '@/types'
+import type {
+  WorkTarget,
+  UserInfo,
+  ChargingStation,
+  DroneMoveDirection,
+  DroneRotateDirection
+} from '@/types'
 import AIChatWindow from '@/components/AIChatWindow.vue'
+import DroneControlFloating from '@/components/DroneControlFloating.vue'
+import DroneFlightStatusPanel from '@/components/DroneFlightStatusPanel.vue'
 import TargetCard from '@/components/TargetCard.vue'
 import YoloDetectionPanel from '@/components/YoloDetectionPanel.vue'
 import AMapLoader from '@amap/amap-jsapi-loader'
@@ -260,6 +280,26 @@ let missionSprayStartIndex = 0
 let missionStartBattery = 100
 const sprayCircles: any[] = []
 
+const MOVE_STEP_METERS = 10
+const ROTATE_STEP_DEGREES = 20
+const EARTH_RADIUS_METERS = 6378137
+const TAKEOFF_TARGET_ALTITUDE = 10
+const ALTITUDE_STEP_METERS = 0.8
+
+type FlightStatusType = 'idle' | 'taking_off' | 'flying' | 'landing'
+
+const flightInfo = reactive({
+  status: 'idle' as FlightStatusType,
+  totalDistance: 0,
+  forwardDistance: 0,
+  lateralDistance: 0,
+  takeoffCount: 0,
+  landingCount: 0
+})
+
+let takeoffInterval: number | null = null
+let landingInterval: number | null = null
+
 const {
   droneState,
   droneMarker,
@@ -268,7 +308,8 @@ const {
   land: droneLand,
   updateAltitude,
   updateSpeed: updateDroneSpeed,
-  updatePosition
+  updatePosition,
+  updateHeading
 } = useDrone()
 
 const {
@@ -357,13 +398,140 @@ const dispatchTargetText = computed(() => {
   return `${dispatchTarget.value[1].toFixed(5)}, ${dispatchTarget.value[0].toFixed(5)}`
 })
 
-const missionDistanceKm = computed(() => Number(pathStats.totalDistance || 0))
-
 const missionStatusText = computed(() => {
   if (missionPaused.value) return '已暂停'
   if (missionRunning.value) return missionSpraying.value ? '喷洒中' : '派发飞行中'
   return '待命'
 })
+
+const toRadians = (value: number) => (value * Math.PI) / 180
+const toDegrees = (value: number) => (value * 180) / Math.PI
+const normalizeAngle = (angle: number) => ((angle % 360) + 360) % 360
+
+const calculateDestinationPoint = (
+  origin: [number, number],
+  distanceMeters: number,
+  bearingDegrees: number
+): [number, number] => {
+  const lat1 = toRadians(origin[1])
+  const lon1 = toRadians(origin[0])
+  const angularDistance = distanceMeters / EARTH_RADIUS_METERS
+  const bearing = toRadians(bearingDegrees)
+
+  const lat2 =
+    Math.asin(
+      Math.sin(lat1) * Math.cos(angularDistance) +
+        Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing)
+    )
+  const lon2 =
+    lon1 +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2)
+    )
+
+  return [toDegrees(lon2), toDegrees(lat2)]
+}
+
+const getMoveBearing = (baseHeading: number, direction: DroneMoveDirection): number => {
+  switch (direction) {
+    case 'forward':
+      return baseHeading
+    case 'backward':
+      return baseHeading + 180
+    case 'left':
+      return baseHeading - 90
+    case 'right':
+      return baseHeading + 90
+    default:
+      return baseHeading
+  }
+}
+
+const addDistance = (value: number, forward = false, lateral = false) => {
+  if (forward) {
+    flightInfo.forwardDistance = Number((flightInfo.forwardDistance + value).toFixed(1))
+  }
+  if (lateral) {
+    flightInfo.lateralDistance = Number((flightInfo.lateralDistance + value).toFixed(1))
+  }
+  flightInfo.totalDistance = Number((flightInfo.totalDistance + value).toFixed(1))
+}
+
+const moveDroneByDirection = (direction: DroneMoveDirection) => {
+  if (flightInfo.status !== 'flying') {
+    return
+  }
+  const origin = droneState.position
+  if (!origin) return
+  const baseHeading = normalizeAngle(droneState.heading || 0)
+  const bearing = normalizeAngle(getMoveBearing(baseHeading, direction))
+  const destination = calculateDestinationPoint(origin, MOVE_STEP_METERS, bearing)
+  addDistance(MOVE_STEP_METERS, direction === 'forward', direction === 'left' || direction === 'right')
+  updatePosition(destination)
+}
+
+const rotateDroneByDirection = (direction: DroneRotateDirection) => {
+  if (flightInfo.status !== 'flying') {
+    return
+  }
+  const currentHeading = normalizeAngle(droneState.heading || 0)
+  const delta = direction === 'ccw' ? -ROTATE_STEP_DEGREES : ROTATE_STEP_DEGREES
+  const nextHeading = normalizeAngle(currentHeading + delta)
+  updateHeading(nextHeading)
+}
+
+const clearTakeoffInterval = () => {
+  if (takeoffInterval) {
+    window.clearInterval(takeoffInterval)
+    takeoffInterval = null
+  }
+}
+
+const clearLandingInterval = () => {
+  if (landingInterval) {
+    window.clearInterval(landingInterval)
+    landingInterval = null
+  }
+}
+
+const handleTakeoffCommand = () => {
+  if (flightInfo.status === 'taking_off' || flightInfo.status === 'flying') return
+  clearLandingInterval()
+  flightInfo.status = 'taking_off'
+  droneState.status = 'taking_off'
+  flightInfo.takeoffCount += 1
+  ElMessage.success('起飞指令已发送')
+  let currentAlt = droneState.altitude
+  takeoffInterval = window.setInterval(() => {
+    currentAlt = Math.min(currentAlt + ALTITUDE_STEP_METERS, TAKEOFF_TARGET_ALTITUDE)
+    updateAltitude(currentAlt)
+    if (currentAlt >= TAKEOFF_TARGET_ALTITUDE) {
+      clearTakeoffInterval()
+      flightInfo.status = 'flying'
+      droneState.status = 'flying'
+    }
+  }, 80)
+}
+
+const handleLandingCommand = () => {
+  if (flightInfo.status === 'landing' || flightInfo.status === 'idle') return
+  clearTakeoffInterval()
+  flightInfo.status = 'landing'
+  droneState.status = 'landing'
+  flightInfo.landingCount += 1
+  ElMessage.success('降落指令已发送')
+  let currentAlt = droneState.altitude
+  landingInterval = window.setInterval(() => {
+    currentAlt = Math.max(0, currentAlt - ALTITUDE_STEP_METERS)
+    updateAltitude(currentAlt)
+    if (currentAlt <= 0) {
+      clearLandingInterval()
+      flightInfo.status = 'idle'
+      droneState.status = 'landed'
+    }
+  }, 80)
+}
 
 const clearSprayCircles = () => {
   sprayCircles.forEach(circle => circle?.setMap?.(null))
@@ -801,6 +969,8 @@ watch(selectedDroneId, (_newId) => {
 onUnmounted(() => {
   environmentStore.stopAutoRefresh()
   destroyMapOnDashboard()
+  clearTakeoffInterval()
+  clearLandingInterval()
 })
 
 const simulateSprayPath = () => {
@@ -1167,6 +1337,7 @@ const getFlightStatusType = (status: string): string => {
 
 .map-card {
   height: 100%;
+  position: relative;
 }
 
 .map-card :deep(.el-card__body) {
