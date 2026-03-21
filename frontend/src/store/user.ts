@@ -60,11 +60,23 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  const register = async (username: string, password: string, role: UserRole, name: string) => {
+  const register = async (
+    username: string,
+    password: string,
+    confirmPassword: string,
+    role: UserRole,
+    name: string
+  ) => {
     isLoading.value = true
     error.value = null
     try {
-      const response = await authAPI.register({ username, password, role, name })
+      const response = await authAPI.register({
+        username,
+        password,
+        confirmPassword,
+        role,
+        name
+      })
       if (response.code === 200) {
         return true
       }

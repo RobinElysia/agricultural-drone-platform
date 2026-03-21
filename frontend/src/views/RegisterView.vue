@@ -120,7 +120,13 @@ const handleRegister = async () => {
   if (!valid) return
 
   isLoading.value = true
-  const ok = await userStore.register(form.username, form.password, form.role, form.name)
+  const ok = await userStore.register(
+    form.username,
+    form.password,
+    form.confirmPassword,
+    form.role,
+    form.name
+  )
 
   if (ok) {
     ElMessage.success('注册成功，正在跳转登录页')

@@ -174,7 +174,7 @@ export class DroneController {
       }
 
       // 验证操作
-      const validOperations = ['takeoff', 'land', 'spray', 'charge', 'return']
+      const validOperations = ['takeoff', 'land', 'spray', 'charge', 'return', 'move', 'rotate']
       if (!validOperations.includes(operation)) {
         return res.status(400).json(ResponseUtil.badRequest('无效的操作类型'))
       }
@@ -208,6 +208,26 @@ export class DroneController {
             updatedDrone.load = Math.max(0, drone.load - (params?.amount || 5))
           }
           break
+        case 'move':
+          if (
+            !params?.position ||
+            typeof params.position.lat !== 'number' ||
+            typeof params.position.lng !== 'number'
+          ) {
+            return res.status(400).json(ResponseUtil.badRequest('缺少目标位置参数'))
+          }
+          updatedDrone.position = {
+            lat: params.position.lat,
+            lng: params.position.lng
+          }
+          break
+        case 'rotate':
+          if (typeof params?.heading !== 'number') {
+            return res.status(400).json(ResponseUtil.badRequest('缺少旋转角度'))
+          }
+          const normalizedHeading = ((params.heading % 360) + 360) % 360
+          updatedDrone.heading = normalizedHeading
+          break
         case 'charge':
           updatedDrone.status = 'charging'
           // 模拟充电过程
@@ -226,6 +246,11 @@ export class DroneController {
           updatedDrone.status = 'flying'
           break
       }
+
+      updatedDrone.lastUpdate = new Date().toISOString()
+
+      // 将更新的无人机附加到操作结果
+      operationRecord.result = { drone: updatedDrone }
 
       // 更新无人机状态
       await redisService.saveDrone(updatedDrone)

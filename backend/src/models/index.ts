@@ -26,6 +26,7 @@ export interface Drone {
     lat: number
     lng: number
   }
+  heading?: number
   lastUpdate: string
   createdBy?: string
 }
@@ -95,7 +96,7 @@ export interface PathPlan {
 export interface Operation {
   id: string
   droneId: string
-  type: 'takeoff' | 'land' | 'spray' | 'charge' | 'return'
+  type: 'takeoff' | 'land' | 'spray' | 'charge' | 'return' | 'move' | 'rotate'
   parameters?: Record<string, any>
   status: 'pending' | 'executing' | 'completed' | 'failed'
   createdBy: string
@@ -146,6 +147,7 @@ export class ModelFactory {
       load: data.load ?? 0,
       status: data.status || 'online',
       position: data.position || { lat: 39.9, lng: 116.4 },
+      heading: data.heading ?? 0,
       lastUpdate: new Date().toISOString(),
       createdBy: data.createdBy
     }

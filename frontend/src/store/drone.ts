@@ -136,13 +136,13 @@ export const useDroneStore = defineStore('drone', () => {
       const response = await droneAPI.controlDrone(id, operation, params)
       if (response.code === 200) {
         operations.value.push(response.data)
-        return true
+        return response.data
       }
       error.value = response.message || '控制无人机失败'
-      return false
+      return null
     } catch (e: any) {
       error.value = getErrorMessage(e, '控制无人机失败')
-      return false
+      return null
     } finally {
       isLoading.value = false
     }

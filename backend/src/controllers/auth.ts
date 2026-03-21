@@ -74,44 +74,56 @@ export class AuthController {
   // 注册
   static async register(req: Request, res: Response) {
     try {
-      const { username, password, role, name } = req.body
+      const { username, password, confirmPassword, role, name, realName } = req.body
 
-      // 验证输入
-      if (!username || !password || !role || !name) {
+      const cleanUsername = typeof username === 'string' ? username.trim() : ''
+      const cleanName = (typeof name === 'string' ? name : '') || (typeof realName === 'string' ? realName : '')
+
+      if (!cleanUsername || !cleanName || !password || !confirmPassword || !role) {
         return res.status(400).json(ResponseUtil.badRequest('缺少必要参数'))
       }
 
-      // 验证角色
-      if (!['admin', 'operator', 'agriculturalist'].includes(role)) {
-        return res.status(400).json(ResponseUtil.badRequest('无效的角色'))
+      if (password !== confirmPassword) {
+        return res.status(400).json(ResponseUtil.badRequest('两次输入的密码不一致'))
       }
 
-      // 检查用户名是否已存在
-      const existingUser = await redisService.getUserByUsername(username)
-      if (existingUser) {
-        return res.status(409).json(ResponseUtil.conflict('用户名已存在'))
-      }
-
-      // 密码长度验证
       if (password.length < 6) {
         return res.status(400).json(ResponseUtil.badRequest('密码长度至少为6位'))
       }
 
-      // 密码哈希
+      const normalizedRoleInput = String(role).trim()
+      const roleMap: Record<string, UserRole | undefined> = {
+        管理员: 'admin',
+        作业员: 'operator',
+        农业员: 'agriculturalist',
+        admin: 'admin',
+        administrator: 'admin',
+        operator: 'operator',
+        agriculturalist: 'agriculturalist',
+        farmer: 'agriculturalist'
+      }
+      const normalizedRole = roleMap[normalizedRoleInput] || roleMap[normalizedRoleInput.toLowerCase()]
+
+      if (!normalizedRole) {
+        return res.status(400).json(ResponseUtil.badRequest('无效的角色'))
+      }
+
+      const existingUser = await redisService.getUserByUsername(cleanUsername)
+      if (existingUser) {
+        return res.status(409).json(ResponseUtil.conflict('用户名已存在'))
+      }
+
       const hashedPassword = await AuthUtil.hashPassword(password)
 
-      // 创建用户
       const user = ModelFactory.createUser({
-        username,
+        username: cleanUsername,
         password: hashedPassword,
-        role: role as UserRole,
-        name
+        role: normalizedRole,
+        name: cleanName.trim()
       })
 
-      // 保存到Redis
       await redisService.saveUser(user)
 
-      // 返回用户信息（不包含密码）
       const userInfo = {
         id: user.id,
         username: user.username,
@@ -121,7 +133,6 @@ export class AuthController {
       }
 
       return res.json(ResponseUtil.success(userInfo, '注册成功'))
-
     } catch (error) {
       console.error('注册错误:', error)
       return res.status(500).json(ResponseUtil.internalError('注册失败'))

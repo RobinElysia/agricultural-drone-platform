@@ -42,6 +42,14 @@
             <div class="metric-row"><span>载药量</span><strong>{{ selectedDrone.load }} L</strong></div>
             <div class="metric-row"><span>状态</span><el-tag :type="getDroneStatusType(selectedDrone.status)">{{ selectedDrone.status }}</el-tag></div>
             <div class="metric-row"><span>位置</span><strong>{{ selectedDrone.position.lat.toFixed(4) }}, {{ selectedDrone.position.lng.toFixed(4) }}</strong></div>
+            <div class="metric-row distance-row">
+              <span>本次控制</span>
+              <strong>{{ manualSessionDistance.toFixed(1) }} m</strong>
+            </div>
+            <div class="metric-row distance-row">
+              <span>累计移动</span>
+              <strong>{{ manualTotalDistance.toFixed(1) }} m</strong>
+            </div>
 
             <el-form-item label="选择无人机" class="picker-row">
               <el-select v-model="selectedDroneId" @change="onDroneSelect" placeholder="请选择无人机">
@@ -86,16 +94,6 @@
           <el-empty v-else description="正在获取环境数据" />
         </el-card>
 
-        <DroneFlightStatusPanel
-          :status="flightInfo.status"
-          :altitude="droneState.altitude"
-          :move-step="MOVE_STEP_METERS"
-          :forward-distance="flightInfo.forwardDistance"
-          :total-distance="flightInfo.totalDistance"
-          :lateral-distance="flightInfo.lateralDistance"
-          :takeoff-count="flightInfo.takeoffCount"
-          :landing-count="flightInfo.landingCount"
-        />
       </aside>
 
       <main class="column column-center">
@@ -104,12 +102,13 @@
             <div class="panel-head">
               <h2 class="section-title">实时地图与飞行控制</h2>
               <div class="inline-actions">
-                <el-button size="small" type="primary" @click="startDispatchSelect" :disabled="!mapInitialized || missionRunning">
-                  {{ selectingDispatch ? '请点击地图...' : '选择派发点' }}
-                </el-button>
                 <el-button size="small" type="primary" plain @click="startSprayDrawing" :disabled="!mapInitialized || sprayDrawing">圈选喷洒区</el-button>
                 <el-button size="small" type="success" plain @click="regenerateSprayPath" :disabled="sprayPolygonPoints.length < 3">喷洒轨迹</el-button>
                 <el-button size="small" type="primary" plain @click="openTargetModalFromPlan" :disabled="!sprayPlanResult">新增作业目标</el-button>
+                <el-button size="small" type="success" plain @click="handleStartMissionButton" :disabled="!missionReady">开始任务</el-button>
+                <el-button size="small" type="warning" plain @click="pauseMission" :disabled="!missionRunning">暂停任务</el-button>
+                <el-button size="small" type="info" plain @click="resumeMission" :disabled="!missionPaused">继续任务</el-button>
+                <el-button size="small" type="danger" plain @click="finishMission" :disabled="!(missionStatus === 'running' || missionStatus === 'paused')">结束任务</el-button>
                 <el-button size="small" type="warning" plain @click="simulateSprayPath" :disabled="!sprayPlanResult || missionRunning">喷洒模拟</el-button>
                 <el-button size="small" plain @click="exportSprayMission" :disabled="!sprayPlanResult">导出喷洒</el-button>
               </div>
@@ -125,9 +124,10 @@
               <span>喷洒航点: {{ sprayStats.waypointCount }}</span>
               <span>线间距: {{ sprayLineSpacing.toFixed(2) }} m</span>
             </div>
-            <div class="flight-stats">
-              <span>派发点: {{ dispatchTargetText }}</span>
+            <div class="flight-stats mission-status-panel">
               <span>任务状态: {{ missionStatusText }}</span>
+              <span>当前目标: {{ currentMissionTargetName }}</span>
+              <span>任务进度: {{ missionProgress.toFixed(1) }}%</span>
             </div>
             <div class="slider-group">
               <label>喷洒速度 (m/s)</label>
@@ -153,7 +153,13 @@
 
           <el-scrollbar v-if="targets.length > 0" class="targets-scrollbar">
             <div class="targets-list">
-              <TargetCard v-for="target in targets" :key="target.id" :target="target" @complete="handleCompleteTarget" />
+              <TargetCard
+                v-for="target in targets"
+                :key="target.id"
+                :target="target"
+                @complete="handleCompleteTarget"
+                @deleteTarget="handleDeleteTarget"
+              />
             </div>
           </el-scrollbar>
           <el-empty v-else description="暂无作业目标">
@@ -161,26 +167,11 @@
           </el-empty>
         </el-card>
 
-        <el-card class="panel-card">
-          <template #header>
-            <div class="panel-head">
-              <h2 class="section-title">用户列表</h2>
-              <el-button size="small" @click="fetchUsers">刷新</el-button>
-            </div>
-          </template>
-
-          <el-table :data="users" size="small" stripe>
-            <el-table-column prop="name" label="姓名" min-width="92" />
-            <el-table-column prop="username" label="用户名" min-width="102" />
-            <el-table-column prop="role" label="角色" min-width="92" />
-          </el-table>
-        </el-card>
-
-        <el-card class="panel-card">
-          <template #header>
-            <div class="panel-head">
-              <h2 class="section-title">图像识别</h2>
-            </div>
+      <el-card class="panel-card">
+        <template #header>
+          <div class="panel-head">
+            <h2 class="section-title">图像识别</h2>
+          </div>
           </template>
           <YoloDetectionPanel />
         </el-card>
@@ -229,8 +220,11 @@
     </el-dialog>
 
     <DroneControlFloating
-      @move="moveDroneByDirection"
+      :manual-session-distance="manualSessionDistance"
+      :manual-total-distance="manualTotalDistance"
+      @start-move="startManualMovement"
       @rotate="rotateDroneByDirection"
+      @stop-move="stopManualMovement"
       @takeoff="handleTakeoffCommand"
       @landing="handleLandingCommand"
     />
@@ -238,30 +232,30 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, reactive, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
 import { useDroneStore } from '@/store/drone'
 import { useEnvironmentStore } from '@/store/environment'
 import { useAIStore } from '@/store/ai'
-import { authAPI, targetAPI } from '@/api'
-import { ElMessage } from 'element-plus'
+import { targetAPI } from '@/api'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type {
   WorkTarget,
-  UserInfo,
   ChargingStation,
   DroneMoveDirection,
-  DroneRotateDirection
+  DroneRotateDirection,
+  DroneStatus
 } from '@/types'
 import AIChatWindow from '@/components/AIChatWindow.vue'
 import DroneControlFloating from '@/components/DroneControlFloating.vue'
-import DroneFlightStatusPanel from '@/components/DroneFlightStatusPanel.vue'
 import TargetCard from '@/components/TargetCard.vue'
 import YoloDetectionPanel from '@/components/YoloDetectionPanel.vue'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import { useDrone } from '@/composables/useDrone'
 import { usePath } from '@/composables/usePath'
 import { useSprayMissionMap } from '@/composables/useSprayMissionMap'
+import { type LngLat } from '@/composables/useSprayPathPlanner'
 import { calculateDistance } from '@/utils/geo'
 
 const router = useRouter()
@@ -274,15 +268,12 @@ const mapRef = ref<HTMLDivElement>()
 let map: any = null
 let AMap: any = null
 let AMapUI: any = null
-let mapClickListener: ((event: any) => void) | null = null
-let dispatchMarker: any = null
 let missionSprayStartIndex = 0
 let missionStartBattery = 100
 const sprayCircles: any[] = []
 
 const MOVE_STEP_METERS = 10
 const ROTATE_STEP_DEGREES = 20
-const EARTH_RADIUS_METERS = 6378137
 const TAKEOFF_TARGET_ALTITUDE = 10
 const ALTITUDE_STEP_METERS = 0.8
 
@@ -343,7 +334,6 @@ const {
 
 const selectedDroneId = ref('')
 const targets = ref<WorkTarget[]>([])
-const users = ref<UserInfo[]>([])
 const chargingStations = ref<ChargingStation[]>([])
 const showTargetModal = ref(false)
 const showDroneModal = ref(false)
@@ -364,16 +354,98 @@ const droneForm = ref({
   lng: 116.4
 })
 
+const AUTO_CLEANUP_DELAY_MS = 5000
+const pendingAutoCleanupIds = new Set<string>()
+let autoCleanupTimer: number | null = null
+
+const executeAutoCleanup = async (ids: string[]) => {
+  if (!ids.length) return
+
+  const targetsToCleanup = targets.value.filter(t => ids.includes(t.id))
+  if (!targetsToCleanup.length) return
+
+  const cleanupResults = await Promise.allSettled(
+    targetsToCleanup.map(async (target) => {
+      const response = await targetAPI.deleteTarget(target.id)
+      return { id: target.id, success: !!response?.code }
+    })
+  )
+
+  const cleanedIds = cleanupResults.reduce<string[]>((acc, result) => {
+    if (result.status === 'fulfilled' && result.value.success) {
+      acc.push(result.value.id)
+    }
+    return acc
+  }, [])
+
+  const failedIds = targetsToCleanup
+    .map((target) => target.id)
+    .filter((id) => !cleanedIds.includes(id))
+
+  if (failedIds.length) {
+    failedIds.forEach((id) => pendingAutoCleanupIds.add(id))
+    startAutoCleanupTimer()
+  }
+
+  if (!cleanedIds.length) return
+
+  targets.value = targets.value.filter((target) => !cleanedIds.includes(target.id))
+  ElMessage.info(
+    cleanedIds.length === 1 ? '已自动清理完成作业目标' : `已自动清理 ${cleanedIds.length} 个完成的作业目标`,
+    { duration: 2000 }
+  )
+}
+
+const startAutoCleanupTimer = () => {
+  if (autoCleanupTimer !== null) return
+  autoCleanupTimer = window.setTimeout(async () => {
+    autoCleanupTimer = null
+    const idsToCleanup = Array.from(pendingAutoCleanupIds)
+    pendingAutoCleanupIds.clear()
+    await executeAutoCleanup(idsToCleanup)
+  }, AUTO_CLEANUP_DELAY_MS)
+}
+
+const queueAutoCleanupForCompleted = (target: WorkTarget) => {
+  if (target.status !== 'completed') return
+  if (pendingAutoCleanupIds.has(target.id)) return
+  pendingAutoCleanupIds.add(target.id)
+  startAutoCleanupTimer()
+}
+
+const scheduleAutoCleanupForTargets = (targetList: WorkTarget[]) => {
+  targetList.forEach(queueAutoCleanupForCompleted)
+}
+
+const cancelAutoCleanupForTarget = (targetId: string): WorkTarget | undefined => {
+  const removed = pendingAutoCleanupIds.delete(targetId)
+  if (!removed) return undefined
+  if (!pendingAutoCleanupIds.size && autoCleanupTimer !== null) {
+    window.clearTimeout(autoCleanupTimer)
+    autoCleanupTimer = null
+  }
+  return targets.value.find((target) => target.id === targetId)
+}
+
 const speedValue = ref(6)
 const heightValue = ref(8)
 const mapInitialized = ref(false)
-const selectingDispatch = ref(false)
-const dispatchTarget = ref<[number, number] | null>(null)
 const missionRunning = ref(false)
 const missionPaused = ref(false)
 const missionSpraying = ref(false)
+const missionStatus = ref<'idle' | 'ready' | 'running' | 'paused' | 'finished'>('idle')
+const missionProgress = ref(0)
+const missionQueue = ref<WorkTarget[]>([])
+const currentMissionTarget = ref<WorkTarget | null>(null)
+const currentMissionPolygon = ref<LngLat[]>([])
 const activeMissionTargetId = ref<string | null>(null)
+const manualSessionDistance = ref(0)
+const manualTotalDistance = ref(0)
+const manualSessionActive = ref(false)
 const MU_TO_M2 = 666.6667
+const MANUAL_MOVE_INTERVAL_MS = 180
+const manualMoveDirection = ref<DroneMoveDirection | null>(null)
+const manualMoveTimer = ref<number | null>(null)
 
 sprayParams.value.speed = speedValue.value
 sprayParams.value.altitude = heightValue.value
@@ -384,68 +456,110 @@ const calculatedPesticide = computed(() =>
   Number((Math.max(0, newTarget.value.area) * Math.max(0.01, pesticidePerMu.value)).toFixed(2))
 )
 
+const deriveSprayPlanMetrics = (options?: { silent?: boolean; hint?: string }) => {
+  const { silent = false, hint = '喷洒面积或用药量无效，请重新规划喷洒区' } = options ?? {}
+  const plan = sprayPlanResult.value
+  if (!plan || plan.path.length < 2) {
+    if (!silent) ElMessage.warning('请先生成有效喷洒轨迹')
+    return null
+  }
+  if (!plan.polygon || plan.polygon.length < 3) {
+    if (!silent) ElMessage.warning('喷洒区域点数不足，请重新圈选')
+    return null
+  }
+  const areaM2 = plan.areaM2 ?? sprayStats.value.areaM2
+  if (!Number.isFinite(areaM2) || areaM2 <= 0) {
+    if (!silent) ElMessage.warning(hint)
+    return null
+  }
+  const areaMu = Number((areaM2 / MU_TO_M2).toFixed(2))
+  if (!Number.isFinite(areaMu) || areaMu <= 0) {
+    if (!silent) ElMessage.warning(hint)
+    return null
+  }
+  const pesticide = Number((areaMu * pesticidePerMu.value).toFixed(2))
+  if (!Number.isFinite(pesticide) || pesticide <= 0) {
+    if (!silent) ElMessage.warning(hint)
+    return null
+  }
+  return { areaMu, pesticide, polygon: plan.polygon }
+}
+
 const selectedDrone = computed(() => {
   if (!selectedDroneId.value) return null
   return droneStore.drones.find(d => d.id === selectedDroneId.value) || null
 })
 
-const canExecuteMission = computed(() => {
-  return Boolean(selectedDrone.value && dispatchTarget.value && sprayPlanResult.value && !missionRunning.value)
+const activeMissionInfo = computed(() => {
+  return currentMissionTarget.value || targets.value.find(target => target.id === activeMissionTargetId.value) || null
 })
 
-const dispatchTargetText = computed(() => {
-  if (!dispatchTarget.value) return '未设置'
-  return `${dispatchTarget.value[1].toFixed(5)}, ${dispatchTarget.value[0].toFixed(5)}`
+const currentMissionTargetName = computed(() => {
+  return activeMissionInfo.value ? activeMissionInfo.value.name : '暂无目标'
+})
+
+const missionReady = computed(() => {
+  return (
+    Boolean(selectedDrone.value && sprayPlanResult.value && sprayPlanResult.value.path.length > 1) &&
+    missionStatus.value !== 'running'
+  )
 })
 
 const missionStatusText = computed(() => {
-  if (missionPaused.value) return '已暂停'
-  if (missionRunning.value) return missionSpraying.value ? '喷洒中' : '派发飞行中'
-  return '待命'
+  switch (missionStatus.value) {
+    case 'idle':
+      return '待命'
+    case 'ready':
+      return '等待启动'
+    case 'running':
+      return missionSpraying.value ? '喷洒中' : '飞行中'
+    case 'paused':
+      return '已暂停'
+    case 'finished':
+      return '已完成'
+    default:
+      return '未知'
+  }
 })
 
-const toRadians = (value: number) => (value * Math.PI) / 180
-const toDegrees = (value: number) => (value * 180) / Math.PI
 const normalizeAngle = (angle: number) => ((angle % 360) + 360) % 360
+const METERS_PER_DEGREE_LAT = 111320
 
-const calculateDestinationPoint = (
-  origin: [number, number],
-  distanceMeters: number,
-  bearingDegrees: number
-): [number, number] => {
-  const lat1 = toRadians(origin[1])
-  const lon1 = toRadians(origin[0])
-  const angularDistance = distanceMeters / EARTH_RADIUS_METERS
-  const bearing = toRadians(bearingDegrees)
-
-  const lat2 =
-    Math.asin(
-      Math.sin(lat1) * Math.cos(angularDistance) +
-        Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing)
-    )
-  const lon2 =
-    lon1 +
-    Math.atan2(
-      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
-      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2)
-    )
-
-  return [toDegrees(lon2), toDegrees(lat2)]
+const metersToLatDegrees = (meters: number) => meters / METERS_PER_DEGREE_LAT
+const metersToLngDegrees = (meters: number, referenceLat: number) => {
+  const radLat = (referenceLat * Math.PI) / 180
+  const cosLat = Math.cos(radLat)
+  if (cosLat === 0) return 0
+  return meters / (METERS_PER_DEGREE_LAT * cosLat)
 }
 
-const getMoveBearing = (baseHeading: number, direction: DroneMoveDirection): number => {
+const getDemoDestination = (
+  origin: [number, number],
+  direction: DroneMoveDirection,
+  distance = MOVE_STEP_METERS
+): [number, number] => {
+  const [lng, lat] = origin
+  let latMeters = 0
+  let lngMeters = 0
+
   switch (direction) {
     case 'forward':
-      return baseHeading
+      latMeters = distance
+      break
     case 'backward':
-      return baseHeading + 180
+      latMeters = -distance
+      break
     case 'left':
-      return baseHeading - 90
+      lngMeters = -distance
+      break
     case 'right':
-      return baseHeading + 90
-    default:
-      return baseHeading
+      lngMeters = distance
+      break
   }
+
+  const nextLat = lat + metersToLatDegrees(latMeters)
+  const nextLng = lng + metersToLngDegrees(lngMeters, lat)
+  return [nextLng, nextLat]
 }
 
 const addDistance = (value: number, forward = false, lateral = false) => {
@@ -458,27 +572,173 @@ const addDistance = (value: number, forward = false, lateral = false) => {
   flightInfo.totalDistance = Number((flightInfo.totalDistance + value).toFixed(1))
 }
 
-const moveDroneByDirection = (direction: DroneMoveDirection) => {
-  if (flightInfo.status !== 'flying') {
-    return
-  }
-  const origin = droneState.position
-  if (!origin) return
-  const baseHeading = normalizeAngle(droneState.heading || 0)
-  const bearing = normalizeAngle(getMoveBearing(baseHeading, direction))
-  const destination = calculateDestinationPoint(origin, MOVE_STEP_METERS, bearing)
-  addDistance(MOVE_STEP_METERS, direction === 'forward', direction === 'left' || direction === 'right')
-  updatePosition(destination)
+const canControlDrone = () => {
+  return Boolean(selectedDrone.value && flightInfo.status === 'flying')
 }
 
-const rotateDroneByDirection = (direction: DroneRotateDirection) => {
-  if (flightInfo.status !== 'flying') {
+const startManualSession = () => {
+  manualSessionDistance.value = 0
+  manualSessionActive.value = true
+}
+
+const stopManualSession = () => {
+  manualSessionActive.value = false
+}
+
+const updateMovementDistances = (direction: DroneMoveDirection, distance = MOVE_STEP_METERS) => {
+  manualSessionDistance.value = Number((manualSessionDistance.value + distance).toFixed(1))
+  manualTotalDistance.value = Number((manualTotalDistance.value + distance).toFixed(1))
+  addDistance(distance, direction === 'forward', direction === 'left' || direction === 'right')
+}
+
+const clearManualMoveTimer = () => {
+  if (manualMoveTimer.value !== null) {
+    window.clearInterval(manualMoveTimer.value)
+    manualMoveTimer.value = null
+  }
+  manualMoveDirection.value = null
+}
+
+const updateDronePositionLocally = (
+  direction: DroneMoveDirection,
+  distanceStep = MOVE_STEP_METERS,
+  destination?: [number, number]
+) => {
+  if (!selectedDrone.value) return
+  const origin =
+    droneState.position ||
+    [selectedDrone.value.position.lng, selectedDrone.value.position.lat]
+  const nextPosition = destination ?? getDemoDestination(origin, direction, distanceStep)
+  updatePosition(nextPosition)
+  droneState.position = nextPosition
+  selectedDrone.value = {
+    ...selectedDrone.value,
+    position: { lng: nextPosition[0], lat: nextPosition[1] }
+  }
+  map?.setCenter?.(nextPosition)
+}
+
+const sendMoveCommand = async ({
+  droneId,
+  direction,
+  distanceStep = MOVE_STEP_METERS
+}: {
+  droneId: string
+  direction: DroneMoveDirection
+  distanceStep?: number
+}) => {
+  if (!selectedDrone.value || selectedDrone.value.id !== droneId) return false
+  const origin =
+    droneState.position ||
+    [selectedDrone.value.position.lng, selectedDrone.value.position.lat]
+  const destination = getDemoDestination(origin, direction, distanceStep)
+  const targetParams = {
+    position: { lat: destination[1], lng: destination[0] }
+  }
+
+  updateDronePositionLocally(direction, distanceStep, destination)
+  updateMovementDistances(direction, distanceStep)
+
+  try {
+    await droneStore.controlDrone(droneId, 'move', targetParams)
+  } catch (error) {
+    console.warn('Manual move command failed, falling back to local simulation.', error)
+  }
+
+  return true
+}
+
+const executeManualMove = (direction: DroneMoveDirection) => {
+  if (!canControlDrone() || !selectedDrone.value) {
     return
   }
+  if (!manualSessionActive.value) {
+    startManualSession()
+  }
+  void sendMoveCommand({
+    droneId: selectedDrone.value.id,
+    direction
+  })
+}
+
+const startManualMovement = (direction: DroneMoveDirection) => {
+  if (!canControlDrone()) {
+    return
+  }
+  manualMoveDirection.value = direction
+  executeManualMove(direction)
+
+  if (manualMoveTimer.value === null) {
+    manualMoveTimer.value = window.setInterval(() => {
+      if (manualMoveDirection.value) {
+        executeManualMove(manualMoveDirection.value)
+      }
+    }, MANUAL_MOVE_INTERVAL_MS)
+  }
+}
+
+const stopManualMovement = async () => {
+  clearManualMoveTimer()
+  await handleStopMove()
+}
+
+const rotateDroneByDirection = async (direction: DroneRotateDirection) => {
+  if (flightInfo.status !== 'flying' || !selectedDrone.value) {
+    return
+  }
+
   const currentHeading = normalizeAngle(droneState.heading || 0)
   const delta = direction === 'ccw' ? -ROTATE_STEP_DEGREES : ROTATE_STEP_DEGREES
   const nextHeading = normalizeAngle(currentHeading + delta)
+
   updateHeading(nextHeading)
+  if (selectedDrone.value) {
+    selectedDrone.value = {
+      ...selectedDrone.value,
+      heading: nextHeading
+    }
+  }
+
+  try {
+    const operation = await droneStore.controlDrone(selectedDrone.value.id, 'rotate', {
+      heading: nextHeading
+    })
+    const updatedHeading = operation?.result?.drone?.heading
+    if (typeof updatedHeading === 'number') {
+      const normalizedHeading = normalizeAngle(updatedHeading)
+      updateHeading(normalizedHeading)
+      if (selectedDrone.value) {
+        selectedDrone.value = {
+          ...selectedDrone.value,
+          heading: normalizedHeading
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('Rotation command failed, keeping demo heading.', error)
+  }
+}
+
+const handleStopMove = async () => {
+  const wasActive = manualSessionActive.value
+  stopManualSession()
+  if (!wasActive || !selectedDrone.value) return
+
+  const currentPos =
+    droneState.position || [selectedDrone.value.position.lng, selectedDrone.value.position.lat]
+  const stopParams = {
+    position: { lat: currentPos[1], lng: currentPos[0] }
+  }
+
+  const stopOperation = await droneStore.controlDrone(selectedDrone.value.id, 'move', stopParams)
+  const updatedPosition = stopOperation?.result?.drone?.position || stopParams.position
+  updatePosition([updatedPosition.lng, updatedPosition.lat])
+  if (selectedDrone.value) {
+    selectedDrone.value = {
+      ...selectedDrone.value,
+      position: updatedPosition
+    }
+  }
 }
 
 const clearTakeoffInterval = () => {
@@ -548,29 +808,28 @@ const updatePathStats = () => {
   pathStats.waypointCount = Math.max(0, pathPoints.value.length - 1)
 }
 
-const setDispatchTarget = (point: [number, number]) => {
-  dispatchTarget.value = point
-  if (!map || !AMap) return
-
-  if (!dispatchMarker) {
-    dispatchMarker = new AMap.Marker({
-      position: point,
-      content:
-        '<div style="width:16px;height:16px;border-radius:999px;background:#f97316;border:2px solid #fff;box-shadow:0 0 8px rgba(249,115,22,.5);"></div>',
-      offset: new AMap.Pixel(-8, -8),
-      title: '派发目标点'
-    })
-    map.add(dispatchMarker)
-  } else {
-    dispatchMarker.setPosition(point)
-  }
-}
-
 const syncDronePositionToMap = () => {
   if (!selectedDrone.value || !map) return
   const pos: [number, number] = [selectedDrone.value.position.lng, selectedDrone.value.position.lat]
   map.setCenter(pos)
   updatePosition(pos)
+}
+
+const handleAreaSelected = (polygon: LngLat[]) => {
+  currentMissionPolygon.value = polygon
+  generateSprayPath(polygon)
+}
+
+const generateSprayPath = (areaPolygon?: LngLat[]) => {
+  if (areaPolygon && areaPolygon.length >= 3) {
+    sprayPolygonPoints.value = areaPolygon
+  }
+  regenerateSprayPathInternal()
+  if (sprayPlanResult.value?.path?.length) {
+    missionStatus.value = 'ready'
+    missionProgress.value = 0
+    missionSprayStartIndex = sprayPlanResult.value.path.length > 0 ? 1 : 0
+  }
 }
 
 const buildMissionPath = (): [number, number][] => {
@@ -580,15 +839,7 @@ const buildMissionPath = (): [number, number][] => {
     : [116.397428, 39.90923]
 
   path.push(currentPos)
-  if (dispatchTarget.value) {
-    path.push(dispatchTarget.value)
-  }
-
   const sprayPath = sprayPlanResult.value?.path || []
-  const sprayStartPoint = sprayPath[0]
-  if (sprayStartPoint) {
-    path.push(sprayStartPoint)
-  }
   path.push(...sprayPath)
 
   const deduped: [number, number][] = []
@@ -599,8 +850,9 @@ const buildMissionPath = (): [number, number][] => {
     }
   }
 
-  missionSprayStartIndex = sprayStartPoint
-    ? Math.max(0, deduped.findIndex(p => p[0] === sprayStartPoint[0] && p[1] === sprayStartPoint[1]))
+  const firstSprayPoint = sprayPath[0]
+  missionSprayStartIndex = firstSprayPoint
+    ? Math.max(0, deduped.findIndex(p => p[0] === firstSprayPoint[0] && p[1] === firstSprayPoint[1]))
     : deduped.length
 
   return deduped
@@ -620,6 +872,8 @@ const stopMissionIntervals = () => {
 
 const finishMission = async () => {
   stopMissionIntervals()
+  missionStatus.value = 'finished'
+  missionProgress.value = 100
   clearSprayCircles()
   stopNavigation()
   if (droneMarker.value) {
@@ -649,12 +903,22 @@ const finishMission = async () => {
       ElMessage.warning('任务已飞行完成，但作业目标状态更新失败，请手动刷新后重试')
     } finally {
       activeMissionTargetId.value = null
+      currentMissionTarget.value = null
     }
   }
-  ElMessage.success('派发喷洒任务已完成，无人机已降落')
+  ElMessage.success('任务已完成，无人机已降落')
+
+  if (missionQueue.value.length) {
+    setTimeout(() => {
+      startNextMissionFromQueue()
+    }, 600)
+  } else {
+    missionStatus.value = 'idle'
+    missionProgress.value = 0
+  }
 }
 
-const handleMissionMove = () => {
+const moveDroneToNextPathPoint = () => {
   if (!pathNavigator.value || !selectedDrone.value) return
   const pos = pathNavigator.value.getPosition?.()
   const lng = pos?.getLng?.()
@@ -693,11 +957,96 @@ const handleMissionMove = () => {
       oldest?.setMap?.(null)
     }
   }
+  const totalPoints = Math.max(1, pathPoints.value.length)
+  const percent = ((idx + 1) / totalPoints) * 100
+  missionProgress.value = Math.min(100, Number(percent.toFixed(1)))
 }
 
-const handleMissionPause = async () => {
-  if (!pathNavigator.value?.isCursorAtPathEnd?.()) return
-  await finishMission()
+const handleNavigatorPause = async () => {
+  const cursor = pathNavigator.value?.cursor
+  if (!cursor) return
+  const atEnd = cursor?.idx >= Math.max(0, pathPoints.value.length - 1)
+  if (atEnd) {
+    await finishMission()
+  }
+}
+
+const startNextMissionFromQueue = async () => {
+  if (missionRunning.value || !sprayPlanResult.value?.path?.length) return
+  if (!missionQueue.value.length) {
+    missionStatus.value = 'ready'
+    return
+  }
+  const nextTarget = missionQueue.value.shift()!
+  await startMission(nextTarget)
+}
+
+const enqueueMissionTarget = (target: WorkTarget) => {
+  missionQueue.value.push(target)
+  if (!missionRunning.value) {
+    startNextMissionFromQueue()
+  }
+}
+
+const startMission = async (target: WorkTarget | null = null) => {
+  if (missionRunning.value) {
+    ElMessage.warning('任务正在执行，无法重复启动')
+    return
+  }
+  if (!selectedDrone.value) {
+    ElMessage.warning('请先选择无人机')
+    return
+  }
+  if (!deriveSprayPlanMetrics()) return
+
+  const missionPath = buildMissionPath()
+  if (missionPath.length < 2) {
+    ElMessage.warning('任务路径不足，无法执行')
+    return
+  }
+
+  applyMissionPathToMap(missionPath)
+  clearSprayCircles()
+  stopNavigation()
+
+  missionRunning.value = true
+  missionPaused.value = false
+  missionSpraying.value = false
+  missionStatus.value = 'running'
+  missionProgress.value = 0
+  currentMissionTarget.value = target
+  activeMissionTargetId.value = target?.id ?? null
+
+  await droneTakeoff(heightValue.value)
+  selectedDrone.value.status = 'flying'
+  droneState.status = 'flying'
+  missionStartBattery = selectedDrone.value.battery
+  droneMarker.value?.hide?.()
+
+  createNavigator(speedValue.value * 3.6)
+  if (!pathNavigator.value) {
+    missionRunning.value = false
+    activeMissionTargetId.value = null
+    ElMessage.error('任务导航器创建失败')
+    return
+  }
+
+  pathNavigator.value.on('move', moveDroneToNextPathPoint)
+  pathNavigator.value.on('pause', handleNavigatorPause)
+  startNavigation()
+  ElMessage.success('任务已开始执行')
+}
+
+const handleStartMissionButton = () => {
+  if (!missionReady.value) {
+    ElMessage.warning('请先准备喷洒轨迹')
+    return
+  }
+  if (missionQueue.value.length) {
+    startNextMissionFromQueue()
+  } else {
+    startMission()
+  }
 }
 
 const initMapOnDashboard = async () => {
@@ -737,14 +1086,6 @@ const initMapOnDashboard = async () => {
     updateDroneSpeed(speedValue.value * 3.6)
 
     mountSprayMission(map, AMap)
-    mapClickListener = (event: any) => {
-      if (!selectingDispatch.value) return
-      const point: [number, number] = [event.lnglat.getLng(), event.lnglat.getLat()]
-      setDispatchTarget(point)
-      selectingDispatch.value = false
-      ElMessage.success('派发目标点已设置')
-    }
-    map.on('click', mapClickListener)
     mapInitialized.value = true
     ElMessage.success('地图加载完成')
   } catch (error) {
@@ -758,16 +1099,7 @@ const destroyMapOnDashboard = () => {
   clearSprayCircles()
   clearPathData(map)
 
-  if (dispatchMarker) {
-    dispatchMarker.setMap(null)
-    dispatchMarker = null
-  }
-
   if (map) {
-    if (mapClickListener) {
-      map.off('click', mapClickListener)
-      mapClickListener = null
-    }
     unmountSprayMission()
     map.destroy()
     map = null
@@ -788,121 +1120,30 @@ const onHeightChange = () => {
   updateAltitude(heightValue.value)
 }
 
-const startDispatchSelect = () => {
-  if (!mapInitialized.value) return
-  selectingDispatch.value = true
-  ElMessage.info('请在地图上点击无人机派发目标点')
-}
-
 const startSprayDrawing = () => {
-  selectingDispatch.value = false
   startSprayDrawingInternal()
 }
 
 const regenerateSprayPath = () => {
-  regenerateSprayPathInternal()
-  if (sprayPlanResult.value?.path?.length) {
-    ElMessage.success('喷洒轨迹已生成，可执行派发任务（执行时自动创建作业目标）')
-  }
+  generateSprayPath()
 }
 
 const openTargetModalFromPlan = () => {
-  if (!sprayPlanResult.value) {
-    ElMessage.warning('请先完成喷洒轨迹规划')
-    return
-  }
-
-  const areaMu = plannedAreaMu.value
-  const pesticide = Number((areaMu * pesticidePerMu.value).toFixed(2))
+  const metrics = deriveSprayPlanMetrics()
+  if (!metrics) return
   const now = new Date()
   const missionName = `喷洒作业-${now.getMonth() + 1}${now.getDate()}-${now.getHours()}${now.getMinutes()}`
 
   newTarget.value = {
     name: newTarget.value.name || missionName,
-    area: areaMu > 0 ? areaMu : newTarget.value.area,
+    area: metrics.areaMu,
     status: 'pending'
   }
 
-  if (pesticide > 0) {
-    ElMessage.info(`已按面积自动估算用药量：${pesticide} L`)
+  if (metrics.pesticide > 0) {
+    ElMessage.info(`已按面积自动估算用药量：${metrics.pesticide} L`)
   }
   showTargetModal.value = true
-}
-
-const executeDispatchMission = async () => {
-  if (!selectedDrone.value) {
-    ElMessage.warning('请先选择无人机')
-    return
-  }
-  if (!dispatchTarget.value) {
-    ElMessage.warning('请先设置派发目标点')
-    return
-  }
-  if (!sprayPlanResult.value || sprayPlanResult.value.path.length < 2) {
-    ElMessage.warning('请先生成有效喷洒轨迹')
-    return
-  }
-
-  if (plannedAreaMu.value <= 0 || calculatedPesticide.value <= 0) {
-    ElMessage.warning('喷洒面积或用药量无效，请重新规划喷洒区')
-    return
-  }
-
-  const now = new Date()
-  const autoTargetName = `自动喷洒任务-${now.getMonth() + 1}${now.getDate()}-${now.getHours()}${now.getMinutes()}`
-  try {
-    const targetResponse = await targetAPI.createTarget({
-      name: autoTargetName,
-      area: plannedAreaMu.value,
-      pesticide: calculatedPesticide.value,
-      status: 'in-progress',
-      location: { lat: 39.90923, lng: 116.397428 }
-    })
-
-    if (!targetResponse.code || !targetResponse.data?.id) {
-      ElMessage.error('自动创建作业目标失败，任务未开始')
-      return
-    }
-    activeMissionTargetId.value = targetResponse.data.id
-    await fetchTargets()
-  } catch (error) {
-    ElMessage.error('自动创建作业目标失败，任务未开始')
-    return
-  }
-
-  const missionPath = buildMissionPath()
-  if (missionPath.length < 2) {
-    ElMessage.warning('任务路径不足，无法执行')
-    activeMissionTargetId.value = null
-    return
-  }
-
-  applyMissionPathToMap(missionPath)
-  clearSprayCircles()
-  stopNavigation()
-
-  missionRunning.value = true
-  missionPaused.value = false
-  missionSpraying.value = false
-
-  await droneTakeoff(heightValue.value)
-  selectedDrone.value.status = 'flying'
-  droneState.status = 'flying'
-  missionStartBattery = selectedDrone.value.battery
-
-  droneMarker.value?.hide?.()
-  createNavigator(speedValue.value * 3.6)
-  if (!pathNavigator.value) {
-    missionRunning.value = false
-    activeMissionTargetId.value = null
-    ElMessage.error('任务导航器创建失败')
-    return
-  }
-
-  pathNavigator.value.on('move', handleMissionMove)
-  pathNavigator.value.on('pause', handleMissionPause)
-  startNavigation()
-  ElMessage.success('派发任务已开始执行')
 }
 
 const pauseMission = () => {
@@ -910,6 +1151,7 @@ const pauseMission = () => {
   pauseNavigation()
   missionRunning.value = false
   missionPaused.value = true
+  missionStatus.value = 'paused'
   ElMessage.info('任务已暂停')
 }
 
@@ -918,20 +1160,8 @@ const resumeMission = () => {
   startNavigation()
   missionPaused.value = false
   missionRunning.value = true
+  missionStatus.value = 'running'
   ElMessage.success('任务继续执行')
-}
-
-const stopMission = async () => {
-  stopNavigation()
-  stopMissionIntervals()
-  clearSprayCircles()
-  activeMissionTargetId.value = null
-  droneMarker.value?.show?.()
-  await droneLand()
-  if (selectedDrone.value) {
-    selectedDrone.value.status = 'online'
-  }
-  ElMessage.info('任务已结束')
 }
 
 onMounted(async () => {
@@ -946,7 +1176,6 @@ onMounted(async () => {
   
   await Promise.all([
     droneStore.fetchDrones(),
-    fetchUsers(),
     fetchTargets(),
     fetchChargingStations()
   ])
@@ -971,11 +1200,19 @@ onUnmounted(() => {
   destroyMapOnDashboard()
   clearTakeoffInterval()
   clearLandingInterval()
+  clearManualMoveTimer()
+  if (autoCleanupTimer !== null) {
+    window.clearTimeout(autoCleanupTimer)
+    autoCleanupTimer = null
+  }
+  pendingAutoCleanupIds.clear()
 })
 
 const simulateSprayPath = () => {
   simulateSprayPathInternal()
 }
+
+sprayMission.setAreaSelectedHandler(handleAreaSelected)
 
 const exportSprayMission = () => {
   exportSprayMissionInternal()
@@ -993,22 +1230,12 @@ const onDroneSelect = () => {
   }
 }
 
-const fetchUsers = async () => {
-  try {
-    const response = await authAPI.getUsers()
-    if (response.code && response.data) {
-      users.value = response.data
-    }
-  } catch (error) {
-    users.value = []
-  }
-}
-
 const fetchTargets = async () => {
   try {
     const response = await targetAPI.getTargets()
     if (response.code && response.data) {
       targets.value = response.data
+      scheduleAutoCleanupForTargets(targets.value)
     }
   } catch (error) {
     targets.value = []
@@ -1020,25 +1247,34 @@ const refreshTargets = async () => {
 }
 
 const addTarget = async () => {
-  if (!newTarget.value.name || newTarget.value.area <= 0 || calculatedPesticide.value <= 0) {
-    ElMessage.warning('请填写完整信息')
+  if (!newTarget.value.name) {
+    ElMessage.warning('请填写目标名称')
     return
   }
-  
+
+  const metrics = deriveSprayPlanMetrics()
+  if (!metrics) return
+
+  const locationCandidate = metrics.polygon?.[0]
+  const targetLocation = locationCandidate
+    ? { lat: locationCandidate[1], lng: locationCandidate[0] }
+    : { lat: 39.90923, lng: 116.397428 }
+
   try {
     const response = await targetAPI.createTarget({
       name: newTarget.value.name,
-      area: newTarget.value.area,
-      pesticide: calculatedPesticide.value,
+      area: metrics.areaMu,
+      pesticide: metrics.pesticide,
       status: newTarget.value.status,
-      location: { lat: 39.90923, lng: 116.397428 }
+      location: targetLocation
     })
     
-    if (response.code) {
+    if (response.code && response.data) {
       showTargetModal.value = false
       newTarget.value = { name: '', area: 0, status: 'pending' }
       await fetchTargets()
-      ElMessage.success('作业目标添加成功')
+      enqueueMissionTarget(response.data)
+      ElMessage.success('作业目标添加成功，已加入任务队列')
     }
   } catch (error) {
     ElMessage.error('添加作业目标失败')
@@ -1054,6 +1290,34 @@ const handleCompleteTarget = async (targetId: string) => {
     }
   } catch (error) {
     ElMessage.error('完成作业目标失败')
+  }
+}
+
+const handleDeleteTarget = async (targetId: string) => {
+  const pendingTarget = cancelAutoCleanupForTarget(targetId)
+  try {
+    await ElMessageBox.confirm('确认删除该作业目标吗？', '提示', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    if (pendingTarget) {
+      queueAutoCleanupForCompleted(pendingTarget)
+    }
+    return
+  }
+
+  try {
+    const response = await targetAPI.deleteTarget(targetId)
+    if (response.code) {
+      await fetchTargets()
+      ElMessage.success('已删除该作业目标')
+      return
+    }
+    ElMessage.error(response.message || '删除失败')
+  } catch (error) {
+    ElMessage.error('删除作业目标失败')
   }
 }
 
@@ -1297,6 +1561,10 @@ const getFlightStatusType = (status: string): string => {
   font-weight: 700;
 }
 
+.distance-row strong {
+  color: #0f172a;
+}
+
 .battery-row {
   align-items: stretch;
 }
@@ -1370,6 +1638,11 @@ const getFlightStatusType = (status: string): string => {
   flex-wrap: wrap;
   font-size: 0.82rem;
   color: var(--text-700);
+}
+
+.flight-stats.mission-status-panel {
+  flex-direction: column;
+  gap: 6px;
 }
 
 .flight-stats span {

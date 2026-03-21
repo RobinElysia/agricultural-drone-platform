@@ -35,6 +35,15 @@
       type="success"
       :closable="false"
     />
+    <el-button
+      v-if="target.status === 'completed'"
+      type="danger"
+      size="small"
+      class="w-full yt-delete"
+      @click="handleDelete"
+    >
+      删除
+    </el-button>
   </el-card>
 </template>
 
@@ -48,6 +57,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   complete: [id: string]
+  deleteTarget: [id: string]
 }>()
 
 const statusText = computed(() => {
@@ -70,6 +80,10 @@ const getStatusType = (status: string): string => {
 
 const handleComplete = () => {
   emit('complete', props.target.id)
+}
+
+const handleDelete = () => {
+  emit('deleteTarget', props.target.id)
 }
 </script>
 
@@ -121,5 +135,9 @@ const handleComplete = () => {
 
 :deep(.el-button) {
   width: 100%;
+}
+
+.yt-delete {
+  margin-top: 8px;
 }
 </style>

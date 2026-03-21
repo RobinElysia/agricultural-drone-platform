@@ -13,6 +13,7 @@ export interface DroneStatus {
     lat: number
     lng: number
   }
+  heading?: number
   lastUpdate: string
 }
 
@@ -100,6 +101,12 @@ export interface LoginRequest {
   username: string
   password: string
   role: UserRole
+}
+
+// Register request type
+export interface RegisterRequest extends LoginRequest {
+  confirmPassword: string
+  name: string
 }
 
 // Login response type

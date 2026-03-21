@@ -3,6 +3,7 @@ import type {
   ApiResponse,
   LoginRequest,
   LoginResponse,
+  RegisterRequest,
   DroneStatus,
   EnvironmentInfo,
   WorkTarget,
@@ -59,7 +60,7 @@ export const authAPI = {
     return api.post('/auth/login', data)
   },
   
-  register: (data: LoginRequest & { name: string }): Promise<ApiResponse<UserInfo>> => {
+  register: (data: RegisterRequest): Promise<ApiResponse<UserInfo>> => {
     return api.post('/auth/register', data)
   },
   

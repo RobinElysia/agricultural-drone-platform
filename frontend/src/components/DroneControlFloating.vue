@@ -34,36 +34,44 @@
           <el-button
             size="mini"
             type="primary"
-            class="controller-btn"
-            @click.stop="handleMove('forward')"
-            @pointerdown.stop
+            class="controller-btn direction-btn"
+            @pointerdown.prevent.stop="handleDirectionPointerDown('forward')"
+            @pointerup.stop="handleDirectionPointerRelease"
+            @pointerleave.stop="handleDirectionPointerRelease"
+            @pointercancel.stop="handleDirectionPointerRelease"
           >
             前进
           </el-button>
           <el-button
             size="mini"
             type="primary"
-            class="controller-btn"
-            @click.stop="handleMove('backward')"
-            @pointerdown.stop
+            class="controller-btn direction-btn"
+            @pointerdown.prevent.stop="handleDirectionPointerDown('backward')"
+            @pointerup.stop="handleDirectionPointerRelease"
+            @pointerleave.stop="handleDirectionPointerRelease"
+            @pointercancel.stop="handleDirectionPointerRelease"
           >
             后退
           </el-button>
           <el-button
             size="mini"
             type="primary"
-            class="controller-btn"
-            @click.stop="handleMove('left')"
-            @pointerdown.stop
+            class="controller-btn direction-btn"
+            @pointerdown.prevent.stop="handleDirectionPointerDown('left')"
+            @pointerup.stop="handleDirectionPointerRelease"
+            @pointerleave.stop="handleDirectionPointerRelease"
+            @pointercancel.stop="handleDirectionPointerRelease"
           >
             左移
           </el-button>
           <el-button
             size="mini"
             type="primary"
-            class="controller-btn"
-            @click.stop="handleMove('right')"
-            @pointerdown.stop
+            class="controller-btn direction-btn"
+            @pointerdown.prevent.stop="handleDirectionPointerDown('right')"
+            @pointerup.stop="handleDirectionPointerRelease"
+            @pointerleave.stop="handleDirectionPointerRelease"
+            @pointercancel.stop="handleDirectionPointerRelease"
           >
             右移
           </el-button>
@@ -89,6 +97,13 @@
             右旋
           </el-button>
         </div>
+
+        <div class="manual-distance-block">
+          <p>手动控制距离</p>
+          <p class="distance-values">
+            本次 {{ manualSessionDistanceDisplay }} m · 累计 {{ manualTotalDistanceDisplay }} m
+          </p>
+        </div>
       </div>
     </div>
 
@@ -109,10 +124,11 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import type { DroneMoveDirection, DroneRotateDirection } from '@/types'
 
 const emit = defineEmits<{
-  (event: 'move', direction: DroneMoveDirection): void
+  (event: 'start-move', direction: DroneMoveDirection): void
   (event: 'rotate', direction: DroneRotateDirection): void
   (event: 'takeoff'): void
   (event: 'landing'): void
+  (event: 'stop-move'): void
 }>()
 
 const expandedWidth = 230
@@ -220,14 +236,17 @@ const handleBallClick = () => {
   toggleExpanded()
 }
 
-const handleMove = (direction: DroneMoveDirection) => {
-  console.log(`[DroneControl] handleMove('${direction}')`)
-  emit('move', direction)
-}
-
 const handleRotate = (direction: DroneRotateDirection) => {
   console.log(`[DroneControl] handleRotate('${direction}')`)
   emit('rotate', direction)
+}
+
+const handleDirectionPointerDown = (direction: DroneMoveDirection) => {
+  emit('start-move', direction)
+}
+
+const handleDirectionPointerRelease = () => {
+  emit('stop-move')
 }
 
 onMounted(() => {
@@ -235,17 +254,26 @@ onMounted(() => {
   window.addEventListener('resize', handleResize)
 })
 
+const props = defineProps<{
+  manualSessionDistance?: number
+  manualTotalDistance?: number
+}>()
+
+const manualSessionDistanceDisplay = computed(() => (props.manualSessionDistance ?? 0).toFixed(1))
+const manualTotalDistanceDisplay = computed(() => (props.manualTotalDistance ?? 0).toFixed(1))
+
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
   finishDrag()
   currentMessage?.close()
+  handleDirectionPointerRelease()
 })
 </script>
 
 <style scoped>
 .drone-controller {
   position: fixed;
-  z-index: 1050;
+  z-index: 2200;
   right: auto;
   bottom: auto;
   padding: 0;
@@ -255,6 +283,7 @@ onUnmounted(() => {
   box-shadow: 0 18px 35px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(18px);
   transition: width 0.2s ease, height 0.2s ease;
+  pointer-events: auto;
 }
 
 .controller-card {
@@ -264,6 +293,7 @@ onUnmounted(() => {
   flex-direction: column;
   padding: 12px;
   gap: 10px;
+  pointer-events: auto;
 }
 
 .controller-header {
@@ -280,6 +310,11 @@ onUnmounted(() => {
   color: #f87159;
 }
 
+.direction-btn {
+  pointer-events: auto;
+  touch-action: none;
+}
+
 .controller-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -294,6 +329,22 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.manual-distance-block {
+  margin-top: auto;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(5, 15, 30, 0.85);
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.45);
+}
+
+.manual-distance-block .distance-values {
+  margin-top: 4px;
+  font-weight: 700;
+  color: #8ef6ff;
 }
 
 .pilot-row {

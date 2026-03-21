@@ -17,6 +17,7 @@ export interface SprayMissionParams {
 
 interface UseSprayMissionMapOptions {
   showPlanMarker?: boolean
+  onAreaSelected?: (polygon: LngLat[]) => void
 }
 
 export function useSprayMissionMap(options: UseSprayMissionMapOptions = {}) {
@@ -73,6 +74,7 @@ export function useSprayMissionMap(options: UseSprayMissionMapOptions = {}) {
   let drawListener: ((event: any) => void) | null = null
   let simulationTimer: ReturnType<typeof setInterval> | null = null
   let simulationIndex = 0
+  let areaSelectedHandler: ((polygon: LngLat[]) => void) | null = options.onAreaSelected ?? null
 
   const clearSprayDots = () => {
     sprayDots.forEach(dot => dot?.setMap?.(null))
@@ -193,6 +195,7 @@ export function useSprayMissionMap(options: UseSprayMissionMapOptions = {}) {
     polygonPoints.value = points
     ElMessage.success(`圈选完成，共 ${points.length} 个顶点`)
     generatePlan()
+    areaSelectedHandler?.(points)
   }
 
   const startDrawing = () => {
@@ -321,6 +324,10 @@ export function useSprayMissionMap(options: UseSprayMissionMapOptions = {}) {
     AMap = null
   }
 
+  const setAreaSelectedHandler = (handler: (polygon: LngLat[]) => void) => {
+    areaSelectedHandler = handler
+  }
+
   return {
     drawing,
     simulating,
@@ -336,6 +343,7 @@ export function useSprayMissionMap(options: UseSprayMissionMapOptions = {}) {
     clearAll,
     exportTask,
     mount,
-    unmount
+    unmount,
+    setAreaSelectedHandler
   }
 }
